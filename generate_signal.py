@@ -11,7 +11,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # ================= settings =================
-CANDLE_SYMBOL = "XAUUSD=X"      # spot gold (close to broker XAUUSD), NOT futures
+CANDLE_SYMBOL = "GC=F"          # futures candles, shifted to spot level (see get_candles)
 INTERVAL = "5m"
 ATR_SL, ATR_TP = 1.5, 3.0       # stop = 1.5 ATR, target = 3 ATR  -> 2R
 RR = ATR_TP / ATR_SL
@@ -73,6 +73,7 @@ def tg(method, data=None, files=None):
 
 # ---------------- data + indicators ----------------
 def get_candles():
+    """Futures candles (GC=F) shifted so they sit on the live SPOT price level."""
     df = yf.download(CANDLE_SYMBOL, period="5d", interval=INTERVAL, progress=False, auto_adjust=True)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -81,6 +82,11 @@ def get_candles():
         return None
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
+    spot = live_price(None)
+    if spot:
+        off = spot - float(df["Close"].iloc[-1])
+        if abs(off) <= MAX_PRICE_GAP:
+            df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]] + off
     return df
 
 def live_price(ref):
