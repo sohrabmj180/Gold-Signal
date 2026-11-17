@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch
 import pandas as pd
 
-SYMBOL, INTERVAL = "GC=F", "5m"
+SYMBOL, INTERVAL = "XAUUSD=X", "5m"
 ATR_SL, ATR_TP = 1.5, 3.0
 
 # ---- Message formats: edit freely ----
