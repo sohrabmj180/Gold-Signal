@@ -1,377 +1,102 @@
-"""Gold signal bot (runs every few minutes via GitHub Actions).
-
-1. Computes the signal -> signal.json (website)
-2. Sends new signals to Telegram and records them in trades.json
-3. Detects TP / SL hits automatically and replies to the original signal
-4. Sends image reports to the channel:
-     - daily   at 22:00 Iran time (every day with closed trades)
-     - weekly  on Friday 22:00 Iran time
-     - monthly on the last Friday of the month, 22:00 Iran time
 """
-import json, datetime, os
+Gold signal - GitHub Actions version (runs once every 5 min).
+Environment variables: TG_TOKEN, TG_CHAT_ID
+Educational tool only - not financial advice.
+"""
+import os, json, time, datetime as dt
 from zoneinfo import ZoneInfo
-import requests
+import requests, pandas as pd, yfinance as yf, jdatetime
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch
-import pandas as pd
 
+# ================= settings =================
+CANDLE_SYMBOL = "XAUUSD=X"      # spot gold (close to broker XAUUSD), NOT futures
 INTERVAL = "5m"
-ATR_SL, ATR_TP = 1.5, 3.0
-
-# Price sources, tried in order. XAUUSD=X is SPOT gold (what your broker shows).
-# If Yahoo gives no data for it, the bot falls back to GC=F (futures), which is a few
-# dollars ABOVE spot, so PREMIUM is subtracted from the futures prices to approximate spot.
-# To calibrate PREMIUM: compare "price" in signal.json with the live spot price,
-# then set PREMIUM = old PREMIUM + (price in signal.json - live spot price).
-SYMBOLS = ["XAUUSD=X", "GC=F"]
-PREMIUM = 2.0
-
-# ---- Message formats: edit freely ----
+ATR_SL, ATR_TP = 1.5, 3.0       # stop = 1.5 ATR, target = 3 ATR  -> 2R
+RR = ATR_TP / ATR_SL
+CANDLE_REFRESH = 60             # seconds: re-download candles + indicators
+PRICE_REFRESH = 10              # seconds: live price check (TP/SL detection)
+MAX_PRICE_GAP = 30              # ignore live price if it differs this much from candles
+REPORT_HOUR = 22                # reports at 22:00 Tehran time
 NAME = "XAUUSD"
 TEMPLATE = "{name} {side}\nEntry: {entry}\nTP: {tp}\nSL: {sl}"
 SIDE = {"BUY": "Buy", "SELL": "Sell"}
-MSG_TP = "Tp ✅  {r}R"          # reply when take-profit is hit
-MSG_SL = "Sl ❌  -1R"           # reply when stop-loss is hit
-CAP_DAILY = "📊 Daily report · {date}\nTP: {tp} | SL: {sl}\nNet: {net}"
-CAP_WEEKLY = "📅 Weekly report · {date}\nTP: {tp} | SL: {sl}\nNet: {net}"
-CAP_MONTHLY = "🗓 Monthly report · {date}\nTP: {tp} | SL: {sl}\nNet: {net}"
+# ============================================
 
-TZ = ZoneInfo("Asia/Tehran")      # report schedule uses Iran time
-REPORT_HOUR = 22                  # 22:00 Iran time
-TRADES_FILE = "trades.json"
+TZ = ZoneInfo("Asia/Tehran")
+DATA_DIR = os.getenv("DATA_DIR", ".")
+os.makedirs(DATA_DIR, exist_ok=True)
+TRADES_FILE = os.path.join(DATA_DIR, "trades.json")
+STATE_FILE = os.path.join(DATA_DIR, "state.json")
 
-# Trades that were already traded by hand before the bot tracked them
-# (used only the first time, when trades.json does not exist yet).
-SEED = [
-    {"id": "seed1", "side": "BUY", "entry": 3863.1, "tp": 3873.43, "sl": 3857.93,
-     "open": "2026-11-17T00:56:00+00:00", "status": "sl",
-     "close": "2026-11-17T04:05:00+00:00", "r": -1.0, "pts": -5.17, "msg_id": None},
-    {"id": "seed2", "side": "BUY", "entry": 3868.9, "tp": 3886.77, "sl": 3859.97,
-     "open": "2026-11-17T02:48:00+00:00", "status": "tp",
-     "close": "2026-11-17T04:05:00+00:00", "r": 2.0, "pts": 17.87, "msg_id": None},
-]
+def load_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return default
 
+def save_json(path, obj):
+    try:
+        with open(path, "w") as f:
+            json.dump(obj, f)
+    except Exception as e:
+        print("save error:", e)
 
-# --------------------------------------------------------------- telegram
-def tg_ready():
-    return bool(os.getenv("TG_TOKEN") and os.getenv("TG_CHAT_ID"))
+TRADES = load_json(TRADES_FILE, [])
+STATE = load_json(STATE_FILE, {"last_signal": None, "last_daily": "", "last_weekly": "", "last_monthly": ""})
+S = {"df": None, "a": None, "latest": {"signal": "HOLD", "price": 0, "score": 0, "votes": [0, 0, 0],
+     "rsi": 0, "atr": 0, "ema20": 0, "ema50": 0, "hist": 0, "closes": [], "e20": [], "e50": [],
+     "updated": dt.datetime.now(dt.timezone.utc).isoformat()}}
 
+def utcnow():
+    return dt.datetime.now(dt.timezone.utc)
 
-def _tg(method, data, files=None):
-    """Returns the Telegram message_id on success, otherwise None. Never raises."""
+# ---------------- Telegram ----------------
+def tg(method, data=None, files=None):
     tok, chat = os.getenv("TG_TOKEN"), os.getenv("TG_CHAT_ID")
     if not (tok and chat):
         print("Telegram not configured")
         return None
+    data = dict(data or {})
+    data["chat_id"] = chat
     try:
-        r = requests.post(f"https://api.telegram.org/bot{tok}/{method}",
-                          data={"chat_id": chat, **data}, files=files, timeout=30)
-        print("Telegram:", method, r.status_code, r.text[:100])
-        if r.status_code == 200:
-            return r.json()["result"]["message_id"]
-    except Exception as e:  # network problem etc.
-        print("Telegram error:", e)
+        r = requests.post(f"https://api.telegram.org/bot{tok}/{method}", data=data, files=files, timeout=30)
+        j = r.json()
+        if not j.get("ok"):
+            print("Telegram error:", j)
+        return j.get("result")
+    except Exception as e:
+        print("Telegram exception:", e)
+        return None
+
+# ---------------- data + indicators ----------------
+def get_candles():
+    df = yf.download(CANDLE_SYMBOL, period="5d", interval=INTERVAL, progress=False, auto_adjust=True)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df.dropna()
+    if len(df) < 60:
+        return None
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
+    return df
+
+def live_price(ref):
+    """Spot gold live price. Returns None if unavailable or too far from candles."""
+    try:
+        p = float(requests.get("https://api.gold-api.com/price/XAU", timeout=8).json()["price"])
+        if p > 0 and (ref is None or abs(p - ref) <= MAX_PRICE_GAP):
+            return p
+    except Exception:
+        pass
     return None
 
-
-def tg_photo(path, caption, reply_to=None):
-    data = {"caption": caption}
-    if reply_to:
-        data["reply_to_message_id"] = reply_to
-    with open(path, "rb") as f:
-        return _tg("sendPhoto", data, files={"photo": f})
-
-
-def tg_text(text, reply_to=None):
-    data = {"text": text}
-    if reply_to:
-        data["reply_to_message_id"] = reply_to
-    return _tg("sendMessage", data)
-
-
-# ------------------------------------------------------------ trades file
-def load_state():
-    try:
-        with open(TRADES_FILE) as f:
-            st = json.load(f)
-        st.setdefault("trades", [])
-        st.setdefault("sent", {})
-        return st
-    except Exception:
-        return {"trades": [dict(t) for t in SEED], "sent": {}}
-
-
-def save_state(st):
-    with open(TRADES_FILE, "w") as f:
-        json.dump(st, f, indent=1)
-
-
-def new_trade(out, ts, msg_id=None):
-    return {"id": ts.isoformat(), "side": out["signal"], "entry": out["entry"],
-            "tp": out["tp"], "sl": out["sl"], "open": ts.isoformat(),
-            "status": "open", "close": None, "r": None, "pts": None, "msg_id": msg_id}
-
-
-def update_trades(st, df, notify=None):
-    """Looks at candles after each open trade; marks TP / SL. SL wins if one candle hits both."""
-    idx = df.index
-    idx = idx.tz_localize("UTC") if idx.tz is None else idx.tz_convert("UTC")
-    hi, lo = df["High"].values, df["Low"].values
-    for t in st["trades"]:
-        if t["status"] != "open":
-            continue
-        opened = pd.Timestamp(t["open"])
-        for ts, h, l in zip(idx[idx > opened], hi[idx > opened], lo[idx > opened]):
-            if t["side"] == "BUY":
-                hit_sl, hit_tp = l <= t["sl"], h >= t["tp"]
-            else:
-                hit_sl, hit_tp = h >= t["sl"], l <= t["tp"]
-            if not (hit_sl or hit_tp):
-                continue
-            win = hit_tp and not hit_sl
-            sign = 1 if t["side"] == "BUY" else -1
-            t["status"] = "tp" if win else "sl"
-            t["close"] = ts.isoformat()
-            t["r"] = round(abs(t["tp"] - t["entry"]) / abs(t["entry"] - t["sl"]), 2) if win else -1.0
-            t["pts"] = round(sign * ((t["tp"] if win else t["sl"]) - t["entry"]), 2)
-            if notify:
-                notify(t)
-            break
-
-
-# ----------------------------------------------------------------- stats
-def tzdate(iso):
-    return pd.Timestamp(iso).tz_convert(TZ).date()
-
-
-def stats(ts):
-    n = len(ts)
-    tp = sum(t["status"] == "tp" for t in ts)
-    return {"n": n, "tp": tp, "sl": n - tp,
-            "net": round(sum(t["r"] for t in ts), 2),
-            "pts": round(sum(t["pts"] for t in ts), 2),
-            "wr": round(100 * tp / n) if n else 0}
-
-
-def fmt_r(v):
-    return f"{v:+.1f}R"
-
-
-# ---------------------------------------------------------------- images
-BG, CARD, FG, MUTED = "#0f1420", "#1a2133", "#ece9e0", "#8b93a7"
-GREEN, RED, GOLD = "#26a69a", "#ef5350", "#d4a017"
-
-
-def col(v):
-    return GREEN if v > 0 else RED if v < 0 else MUTED
-
-
-def _canvas(w, h):
-    fig = plt.figure(figsize=(w, h), dpi=150, facecolor=BG)
-    ax = fig.add_axes([0, 0, 1, 1])
-    ax.set_xlim(0, w)
-    ax.set_ylim(0, h)
-    ax.axis("off")
-    return fig, ax
-
-
-def _header(ax, w, h, title, subtitle, s):
-    ax.text(0.4, h - 0.55, f"{NAME} · {title}", color=GOLD, fontsize=15, fontweight="bold", va="center")
-    ax.text(0.4, h - 0.92, subtitle, color=MUTED, fontsize=10, va="center")
-    ax.text(0.4, h - 1.75, fmt_r(s["net"]), color=col(s["net"]), fontsize=34, fontweight="bold", va="center")
-    ax.text(0.4, h - 2.3, f"{s['pts']:+.2f} points", color=MUTED, fontsize=10, va="center")
-    bw, gap = 1.55, 0.12
-    items = [("Trades", s["n"], FG), ("TP", s["tp"], GREEN), ("SL", s["sl"], RED), ("Win rate", f"{s['wr']}%", FG)]
-    for i, (lab, val, c) in enumerate(items):
-        x = 0.32 + i * (bw + gap)
-        ax.add_patch(FancyBboxPatch((x, h - 3.45), bw, 0.85, boxstyle="round,pad=0,rounding_size=0.12",
-                                    fc=CARD, ec="none"))
-        ax.text(x + bw / 2, h - 3.0, str(val), color=c, fontsize=16, fontweight="bold", ha="center", va="center")
-        ax.text(x + bw / 2, h - 3.3, lab, color=MUTED, fontsize=8, ha="center", va="center")
-
-
-def daily_image(day, ts, open_n, path):
-    s = stats(ts)
-    rows = sorted(ts, key=lambda t: t["close"])
-    shown = rows[:16]
-    w = 7.2
-    h = 5.3 + 0.36 * len(shown) + (0.3 if len(rows) > 16 else 0)
-    fig, ax = _canvas(w, h)
-    _header(ax, w, h, "Daily Report", f"{day:%A, %d %B %Y}", s)
-    y = h - 3.95
-    for x, lab, ha in ((0.45, "Time", "left"), (1.45, "Side", "left"), (2.4, "Entry", "left"),
-                       (4.0, "Result", "left"), (5.5, "R", "right"), (6.8, "Points", "right")):
-        ax.text(x, y, lab, color=MUTED, fontsize=8, ha=ha, va="center")
-    for t in shown:
-        y -= 0.36
-        ax.plot([0.4, w - 0.4], [y + 0.18, y + 0.18], color=CARD, lw=0.8)
-        c = col(t["r"])
-        close = pd.Timestamp(t["close"]).tz_convert(TZ)
-        ax.text(0.45, y, f"{close:%H:%M}", color=FG, fontsize=9, va="center")
-        ax.text(1.45, y, SIDE[t["side"]], color=FG, fontsize=9, va="center")
-        ax.text(2.4, y, f"{t['entry']}", color=FG, fontsize=9, va="center")
-        ax.text(4.0, y, "TP" if t["status"] == "tp" else "SL", color=c, fontsize=9, fontweight="bold", va="center")
-        ax.text(5.5, y, fmt_r(t["r"]), color=c, fontsize=9, ha="right", va="center")
-        ax.text(6.8, y, f"{t['pts']:+.2f}", color=c, fontsize=9, ha="right", va="center")
-    if len(rows) > 16:
-        y -= 0.36
-        ax.text(0.45, y, f"+ {len(rows) - 16} more", color=MUTED, fontsize=8, va="center")
-    ax.text(0.4, 0.3, f"Open trades: {open_n}   ·   Times in Iran time (UTC+3:30)", color=MUTED, fontsize=8, va="center")
-    fig.savefig(path, facecolor=BG)
-    plt.close(fig)
-    return path
-
-
-def bars_image(title, subtitle, labels, subs, vals, s, path, footer):
-    """vals: net R per bucket, or None when the bucket had no trades."""
-    w, h = 7.2, 8.0
-    fig, ax = _canvas(w, h)
-    _header(ax, w, h, title, subtitle, s)
-    ax2 = fig.add_axes([0.08, 0.13, 0.86, 0.36], facecolor=BG)
-    real = [v for v in vals if v is not None]
-    top = max([v for v in real] + [1]) * 1.4
-    bot = min([v for v in real] + [0]) * 1.4
-    for i, v in enumerate(vals):
-        if v is None:
-            ax2.text(i, 0, "–", color=MUTED, ha="center", va="center", fontsize=12)
-            continue
-        ax2.bar(i, v, width=0.62, color=col(v), zorder=3)
-        ax2.text(i, v + (0.03 * top if v >= 0 else 0.03 * bot), fmt_r(v), color=col(v), fontsize=9,
-                 fontweight="bold", ha="center", va="bottom" if v >= 0 else "top")
-    ax2.axhline(0, color=MUTED, lw=0.8, zorder=2)
-    ax2.set_ylim(bot if bot < 0 else -0.15 * top, top)
-    ax2.set_xlim(-0.6, len(vals) - 0.4)
-    ax2.set_xticks(range(len(vals)))
-    ax2.set_xticklabels([f"{a}\n{b}" for a, b in zip(labels, subs)], color=FG, fontsize=8)
-    ax2.tick_params(axis="x", length=0)
-    ax2.tick_params(axis="y", colors=MUTED, labelsize=8)
-    ax2.set_ylabel("Net R", color=MUTED, fontsize=8)
-    ax2.grid(axis="y", color=CARD, lw=0.8, zorder=0)
-    for sp in ax2.spines.values():
-        sp.set_visible(False)
-    ax.text(0.4, 0.3, footer, color=MUTED, fontsize=8, va="center")
-    fig.savefig(path, facecolor=BG)
-    plt.close(fig)
-    return path
-
-
-def weekly_image(start, end, ts, path):
-    names = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"]
-    days = [start + datetime.timedelta(days=i) for i in range(7)]
-    vals, subs = [], []
-    for d in days:
-        dt_ = [t for t in ts if tzdate(t["close"]) == d]
-        vals.append(round(sum(t["r"] for t in dt_), 2) if dt_ else None)
-        subs.append(f"{d:%d %b}")
-    return bars_image("Weekly Report", f"{start:%d %b} – {end:%d %b %Y}", names, subs, vals, stats(ts), path,
-                      "Net result per day (R = risk units)   ·   Iran time")
-
-
-def month_weeks(year, month, until):
-    """Saturday-to-Friday weeks of the month up to `until` -> list of (first_day, last_day)."""
-    d = datetime.date(year, month, 1)
-    out = []
-    while d.month == month and d <= until:
-        e = d
-        while e.weekday() != 4 and (e + datetime.timedelta(days=1)).month == month and e < until:
-            e += datetime.timedelta(days=1)
-        out.append((d, e))
-        d = e + datetime.timedelta(days=1)
-    return out
-
-
-def monthly_image(year, month, until, ts, path):
-    weeks = month_weeks(year, month, until)
-    vals, labels, subs = [], [], []
-    for i, (a, b) in enumerate(weeks, 1):
-        wt = [t for t in ts if a <= tzdate(t["close"]) <= b]
-        vals.append(round(sum(t["r"] for t in wt), 2) if wt else None)
-        labels.append(f"Week {i}")
-        subs.append(f"{a.day}-{b.day}")
-    return bars_image("Monthly Report", f"{datetime.date(year, month, 1):%B %Y}", labels, subs, vals,
-                      stats(ts), path, "Net result per week (R = risk units)   ·   Iran time")
-
-
-# --------------------------------------------------------------- reports
-def send_reports(st, now_utc, send_photo=tg_photo, ready=None):
-    ready = tg_ready() if ready is None else ready
-    if not ready:
-        return
-    now = now_utc.astimezone(TZ)
-    if now.hour < REPORT_HOUR:
-        return
-    d = now.date()
-    sent = st.setdefault("sent", {})
-    done = [t for t in st["trades"] if t["status"] in ("tp", "sl")]
-    open_n = sum(t["status"] == "open" for t in st["trades"])
-
-    # daily
-    if sent.get("daily") != d.isoformat():
-        ts = [t for t in done if tzdate(t["close"]) == d]
-        if ts:
-            s = stats(ts)
-            p = daily_image(d, ts, open_n, "report_daily.png")
-            cap = CAP_DAILY.format(date=f"{d:%a %d %b}", tp=s["tp"], sl=s["sl"], net=fmt_r(s["net"]))
-            if send_photo(p, cap) is not None:
-                sent["daily"] = d.isoformat()
-
-    if d.weekday() != 4:      # Friday only
-        return
-
-    # weekly (Saturday .. Friday)
-    if sent.get("weekly") != d.isoformat():
-        start = d - datetime.timedelta(days=6)
-        ts = [t for t in done if start <= tzdate(t["close"]) <= d]
-        if ts:
-            s = stats(ts)
-            p = weekly_image(start, d, ts, "report_weekly.png")
-            cap = CAP_WEEKLY.format(date=f"{start:%d %b} – {d:%d %b}", tp=s["tp"], sl=s["sl"], net=fmt_r(s["net"]))
-            if send_photo(p, cap) is not None:
-                sent["weekly"] = d.isoformat()
-
-    # monthly: only on the last Friday of the month
-    last_friday = (d + datetime.timedelta(days=7)).month != d.month
-    key = d.strftime("%Y-%m")
-    if last_friday and sent.get("monthly") != key:
-        ts = [t for t in done if tzdate(t["close"]).year == d.year and tzdate(t["close"]).month == d.month
-              and tzdate(t["close"]) <= d]
-        if ts:
-            s = stats(ts)
-            p = monthly_image(d.year, d.month, d, ts, "report_monthly.png")
-            cap = CAP_MONTHLY.format(date=f"{d:%B %Y}", tp=s["tp"], sl=s["sl"], net=fmt_r(s["net"]))
-            if send_photo(p, cap) is not None:
-                sent["monthly"] = key
-
-
-# ---------------------------------------------------------------- signal
-def make_chart(df, o, ema20, ema50, path="chart.png"):
-    d = df.tail(80)
-    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=130)
-    for x, (_, r) in enumerate(d.iterrows()):
-        c = "#26a69a" if r["Close"] >= r["Open"] else "#ef5350"
-        ax.vlines(x, r["Low"], r["High"], color=c, linewidth=1)
-        ax.vlines(x, r["Open"], r["Close"], color=c, linewidth=4)
-    ax.plot(range(len(d)), ema20.tail(80).values, color="#3b82f6", linewidth=1, label="EMA20")
-    ax.plot(range(len(d)), ema50.tail(80).values, color="#a855f7", linewidth=1, label="EMA50")
-    for key, color in (("entry", "#d4a017"), ("tp", "#26a69a"), ("sl", "#ef5350")):
-        ax.axhline(o[key], color=color, linestyle="--", linewidth=1)
-        ax.text(len(d) - 1, o[key], f" {key.upper()} {o[key]}", color=color, va="bottom", ha="right", fontsize=8)
-    ax.set_title(f"{NAME} {SIDE[o['signal']]}  ({INTERVAL})", fontsize=11)
-    ax.legend(loc="upper left", fontsize=7)
-    ax.grid(alpha=0.2)
-    ax.set_xticks([])
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
-    return path
-
-
-def compute_signal(df):
+def analyze(df):
     c, h, l = df["Close"], df["High"], df["Low"]
-    ema20 = c.ewm(span=20, adjust=False).mean()
-    ema50 = c.ewm(span=50, adjust=False).mean()
+    e20 = c.ewm(span=20, adjust=False).mean()
+    e50 = c.ewm(span=50, adjust=False).mean()
     macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
     hist = macd - macd.ewm(span=9, adjust=False).mean()
     d = c.diff()
@@ -380,89 +105,211 @@ def compute_signal(df):
     rsi = 100 - 100 / (1 + gain / loss)
     tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
     atr = tr.ewm(alpha=1/14, adjust=False).mean()
-
-    v1 = 1 if ema20.iloc[-1] > ema50.iloc[-1] else -1
+    v1 = 1 if e20.iloc[-1] > e50.iloc[-1] else -1
     r = float(rsi.iloc[-1])
     v2 = 1 if r < 30 else -1 if r > 70 else 0
     v3 = 1 if hist.iloc[-1] > 0 else -1
-    score = v1 + v2 + v3
-    price, a = float(c.iloc[-1]), float(atr.iloc[-1])
+    return {"price": float(c.iloc[-1]), "rsi": round(r, 1), "atr": float(atr.iloc[-1]),
+            "ema20": round(float(e20.iloc[-1]), 2), "ema50": round(float(e50.iloc[-1]), 2),
+            "hist": round(float(hist.iloc[-1]), 3), "votes": [v1, v2, v3], "score": v1 + v2 + v3,
+            "closes": [round(float(x), 2) for x in c.tail(80)],
+            "e20": [round(float(x), 2) for x in e20.tail(80)],
+            "e50": [round(float(x), 2) for x in e50.tail(80)],
+            "e20s": e20, "e50s": e50}
 
-    out = {
-        "updated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "price": round(price, 2), "rsi": round(r, 1), "atr": round(a, 2),
-        "ema20": round(float(ema20.iloc[-1]), 2), "ema50": round(float(ema50.iloc[-1]), 2),
-        "hist": round(float(hist.iloc[-1]), 3),
-        "votes": [v1, v2, v3], "score": score, "signal": "HOLD",
-        "closes": [round(float(x), 2) for x in c.tail(80)],
-        "e20": [round(float(x), 2) for x in ema20.tail(80)],
-        "e50": [round(float(x), 2) for x in ema50.tail(80)],
-    }
-    if score >= 2:
-        out.update(signal="BUY", entry=round(price, 2), sl=round(price - ATR_SL * a, 2), tp=round(price + ATR_TP * a, 2))
-    elif score <= -2:
-        out.update(signal="SELL", entry=round(price, 2), sl=round(price + ATR_SL * a, 2), tp=round(price - ATR_TP * a, 2))
-    return out, ema20, ema50
+def side_of(score):
+    return "BUY" if score >= 2 else "SELL" if score <= -2 else "HOLD"
 
+# ---------------- trades ----------------
+def open_trade():
+    for t in TRADES:
+        if t["status"] == "open":
+            return t
+    return None
 
-def notify_result(t):
-    text = MSG_TP.format(r=f"+{t['r']:g}") if t["status"] == "tp" else MSG_SL
-    if not t.get("msg_id"):
-        text = f"{NAME} {SIDE[t['side']]} {t['entry']}: {text}"
-    tg_text(text, reply_to=t.get("msg_id"))
+def make_chart(df, a, tr, path="/tmp/chart.png"):
+    d = df.tail(80)
+    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=130)
+    for x, (_, r) in enumerate(d.iterrows()):
+        col = "#26a69a" if r["Close"] >= r["Open"] else "#ef5350"
+        ax.vlines(x, r["Low"], r["High"], color=col, linewidth=1)
+        ax.vlines(x, r["Open"], r["Close"], color=col, linewidth=4)
+    ax.plot(range(len(d)), a["e20s"].tail(80).values, color="#3b82f6", linewidth=1, label="EMA20")
+    ax.plot(range(len(d)), a["e50s"].tail(80).values, color="#a855f7", linewidth=1, label="EMA50")
+    for key, color in (("entry", "#d4a017"), ("tp", "#26a69a"), ("sl", "#ef5350")):
+        ax.axhline(tr[key], color=color, linestyle="--", linewidth=1)
+        ax.text(len(d) - 1, tr[key], f" {key.upper()} {tr[key]}", color=color, va="bottom", ha="right", fontsize=8)
+    lo = min(float(d["Low"].min()), tr["sl"], tr["tp"]); hi = max(float(d["High"].max()), tr["sl"], tr["tp"])
+    pad = (hi - lo) * 0.05
+    ax.set_ylim(lo - pad, hi + pad)
+    ax.set_title(f"{NAME} {SIDE[tr['side']]}  ({INTERVAL})", fontsize=11)
+    ax.legend(loc="upper left", fontsize=7)
+    ax.grid(alpha=0.2)
+    ax.set_xticks([])
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+    return path
 
+def open_new(side, df, a):
+    live = live_price(a["price"])
+    entry = live if live else a["price"]
+    atr = a["atr"]
+    if side == "BUY":
+        sl, tp = entry - ATR_SL * atr, entry + ATR_TP * atr
+    else:
+        sl, tp = entry + ATR_SL * atr, entry - ATR_TP * atr
+    tr = {"id": int(time.time()), "side": side, "entry": round(entry, 2), "sl": round(sl, 2), "tp": round(tp, 2),
+          "open_time": utcnow().isoformat(), "status": "open", "msg_id": None}
+    caption = TEMPLATE.format(name=NAME, side=SIDE[side], entry=tr["entry"], tp=tr["tp"], sl=tr["sl"])
+    with open(make_chart(df, a, tr), "rb") as f:
+        res = tg("sendPhoto", {"caption": caption}, {"photo": f})
+    if res:
+        tr["msg_id"] = res.get("message_id")
+    TRADES.append(tr)
+    save_json(TRADES_FILE, TRADES)
+    print("OPENED", tr)
 
-def load_prices():
-    """Returns (candles, source). Spot first; futures minus PREMIUM as a fallback."""
-    import yfinance as yf
-    for sym in SYMBOLS:
-        try:
-            d = yf.download(sym, period="5d", interval=INTERVAL, progress=False, auto_adjust=True)
-            if isinstance(d.columns, pd.MultiIndex):
-                d.columns = d.columns.get_level_values(0)
-            d = d.dropna()
-        except Exception as e:
-            print("Download failed for", sym, "-", e)
-            continue
-        if len(d) < 60:
-            print("Not enough data for", sym, "- rows:", len(d))
-            continue
-        if sym == "GC=F":
-            d[["Open", "High", "Low", "Close"]] = d[["Open", "High", "Low", "Close"]] - PREMIUM
-        print("Price source:", sym, "| last candle:", d.index[-1])
-        return d, sym
-    raise SystemExit("No price data from any source")
+def close_trade(tr, status):
+    tr["status"] = status
+    tr["close_time"] = utcnow().isoformat()
+    if status == "tp":
+        tr["r"], tr["pts"] = RR, round(abs(tr["tp"] - tr["entry"]), 2)
+        text = f"Tp ✅ +{RR:g}R"
+    else:
+        tr["r"], tr["pts"] = -1, -round(abs(tr["entry"] - tr["sl"]), 2)
+        text = "SL ❌ -1R"
+    save_json(TRADES_FILE, TRADES)
+    data = {"text": text}
+    if tr.get("msg_id"):
+        data["reply_to_message_id"] = tr["msg_id"]
+    tg("sendMessage", data)
+    print("CLOSED", tr)
 
+def check_price(tr, price):
+    if tr["side"] == "BUY":
+        hit_tp, hit_sl = price >= tr["tp"], price <= tr["sl"]
+    else:
+        hit_tp, hit_sl = price <= tr["tp"], price >= tr["sl"]
+    if hit_sl:
+        close_trade(tr, "sl")
+    elif hit_tp:
+        close_trade(tr, "tp")
+
+def check_candles(tr, df):
+    """Catches TP/SL touched between live-price checks. If both hit in one candle, SL wins (conservative)."""
+    opened = pd.Timestamp(tr["open_time"])
+    for ts, r in df[df.index > opened].iterrows():
+        hi, lo = float(r["High"]), float(r["Low"])
+        if tr["side"] == "BUY":
+            hit_tp, hit_sl = hi >= tr["tp"], lo <= tr["sl"]
+        else:
+            hit_tp, hit_sl = lo <= tr["tp"], hi >= tr["sl"]
+        if hit_sl:
+            return close_trade(tr, "sl")
+        if hit_tp:
+            return close_trade(tr, "tp")
+
+# ---------------- reports ----------------
+def jal(d):
+    j = jdatetime.date.fromgregorian(date=d)
+    return j.year, j.month, j.day
+
+def closed_where(pred):
+    out = []
+    for t in TRADES:
+        if t["status"] != "open":
+            d = dt.datetime.fromisoformat(t["close_time"]).astimezone(TZ).date()
+            if pred(d):
+                out.append(t)
+    return out
+
+def report_text(title, trs):
+    if not trs:
+        return f"📊 {title}\n\nمعامله‌ی بسته‌شده‌ای نبود."
+    w = sum(1 for t in trs if t["status"] == "tp")
+    l = len(trs) - w
+    net = sum(t["r"] for t in trs)
+    pts = sum(t["pts"] for t in trs)
+    return (f"📊 {title}\n\nتعداد معاملات: {len(trs)}\n✅ سود: {w}\n❌ ضرر: {l}\n"
+            f"نرخ برد: {w * 100 / len(trs):.0f}%\nبرآیند: {net:+g}R ({pts:+.2f} دلار)")
+
+def check_reports():
+    now = dt.datetime.now(TZ)
+    if now.hour < REPORT_HOUR:
+        return
+    today = now.date()
+    iso = today.isoformat()
+    if STATE["last_daily"] != iso:
+        tg("sendMessage", {"text": report_text("گزارش روزانه", closed_where(lambda d: d == today))})
+        STATE["last_daily"] = iso
+        save_json(STATE_FILE, STATE)
+    if now.weekday() == 4 and STATE["last_weekly"] != iso:      # Friday
+        start = today - dt.timedelta(days=6)                    # Saturday..Friday
+        tg("sendMessage", {"text": report_text("گزارش هفتگی", closed_where(lambda d: start <= d <= today))})
+        STATE["last_weekly"] = iso
+        save_json(STATE_FILE, STATE)
+    if jal(today + dt.timedelta(days=1))[2] == 1 and STATE["last_monthly"] != iso:   # last day of Jalali month
+        ym = jal(today)[:2]
+        tg("sendMessage", {"text": report_text("گزارش ماهانه", closed_where(lambda d: jal(d)[:2] == ym))})
+        STATE["last_monthly"] = iso
+        save_json(STATE_FILE, STATE)
+
+# ---------------- main logic ----------------
+def publish(live=None):
+    a = S["a"]
+    if not a:
+        return
+    out = {k: a[k] for k in ("rsi", "ema20", "ema50", "hist", "votes", "score", "closes", "e20", "e50")}
+    out.update(updated=utcnow().isoformat(), price=round(live if live else a["price"], 2),
+               atr=round(a["atr"], 2), signal="HOLD")
+    tr = open_trade()
+    if tr:
+        out.update(signal=tr["side"], entry=tr["entry"], tp=tr["tp"], sl=tr["sl"])
+    S["latest"] = out
+
+def refresh():
+    df = get_candles()
+    if df is None:
+        print("no candles")
+        return
+    a = analyze(df)
+    S["df"], S["a"] = df, a
+    tr = open_trade()
+    if tr:
+        check_candles(tr, df)
+    side = side_of(a["score"])
+    if STATE["last_signal"] is None:                 # first run: just remember, don't trade
+        STATE["last_signal"] = side
+        save_json(STATE_FILE, STATE)
+    elif side != STATE["last_signal"]:
+        if side != "HOLD" and not open_trade():
+            open_new(side, df, a)
+        STATE["last_signal"] = side
+        save_json(STATE_FILE, STATE)
+    publish()
+
+def tick():
+    a = S["a"]
+    if not a:
+        return
+    live = live_price(a["price"])
+    tr = open_trade()
+    if tr and live:
+        check_price(tr, live)
+    publish(live)
+    check_reports()
 
 def main():
-    df, source = load_prices()
-
-    out, ema20, ema50 = compute_signal(df)
-    out["source"] = source
-
     try:
-        prev = json.load(open("signal.json")).get("signal")   # avoid repeating the same alert
-    except Exception:
-        prev = None
-    with open("signal.json", "w") as f:
-        json.dump(out, f)
-
-    st = load_state()
-    update_trades(st, df, notify_result)           # 1) TP / SL results of open trades
-    save_state(st)
-
-    if out["signal"] != "HOLD" and out["signal"] != prev:   # 2) new signal
-        idx = df.index
-        ts = (idx[-1].tz_localize("UTC") if idx.tz is None else idx[-1].tz_convert("UTC"))
-        caption = TEMPLATE.format(name=NAME, side=SIDE[out["signal"]],
-                                  entry=out["entry"], tp=out["tp"], sl=out["sl"])
-        mid = tg_photo(make_chart(df, out, ema20, ema50), caption) if tg_ready() else None
-        st["trades"].append(new_trade(out, ts, mid))
-        save_state(st)
-
-    send_reports(st, datetime.datetime.now(datetime.timezone.utc))   # 3) daily / weekly / monthly
-    save_state(st)
-
+        refresh()
+        tick()
+    except Exception as e:
+        print("error:", e)
+    # always write files so the workflow can commit them
+    save_json(os.path.join(DATA_DIR, "signal.json"), S["latest"])
+    save_json(TRADES_FILE, TRADES)
+    save_json(STATE_FILE, STATE)
 
 if __name__ == "__main__":
     main()
