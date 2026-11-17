@@ -20,51 +20,83 @@ svg{width:100%;height:auto;display:block}
 .lv{display:flex;gap:8px;text-align:center;margin-top:10px}
 .lv div{flex:1;background:var(--bg);border-radius:10px;padding:8px;font-size:13px}
 .lv b{display:block;font-size:16px;direction:ltr}
+#liveP{font-size:26px;direction:ltr;display:inline-block}
 </style>
 </head>
 <body>
 <h1>📈 سیگنال لحظه‌ای طلا</h1>
 <div class="n" id="up">در حال بارگذاری...</div>
-<div class="c" style="margin-top:12px">
+
+<div class="c" style="margin-top:12px;text-align:center">
+قیمت لحظه‌ای اسپات<br>
+<b id="liveP">...</b>
+<div class="n" id="liveT"></div>
+</div>
+
+<div class="c">
 <div id="sig">...</div>
 <div id="sc" class="n" style="text-align:center"></div>
 <div class="lv" id="lv"></div>
 </div>
+
 <div class="c" style="padding:0;overflow:hidden">
-<div id="tv" class="tradingview-widget-container" style="height:420px"><div class="tradingview-widget-container__widget" style="height:100%"></div></div>
-</div>
-<script>
-(function(){var d=window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches;
-var s=document.createElement("script");s.src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";s.async=true;
-s.innerHTML=JSON.stringify({autosize:true,symbol:"OANDA:XAUUSD",interval:"5",timezone:"Asia/Tehran",theme:d?"dark":"light",style:"1",locale:"en",hide_side_toolbar:true,allow_symbol_change:false,calendar:false,support_host:"https://www.tradingview.com"});
-document.getElementById("tv").appendChild(s)})();
+<div class="tradingview-widget-container" style="height:420px;width:100%">
+<div class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>
+<script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js" async>
+{"autosize":true,"symbol":"OANDA:XAUUSD","interval":"5","timezone":"Asia/Tehran","theme":"light","style":"1","locale":"en","allow_symbol_change":false,"hide_side_toolbar":true,"support_host":"https://www.tradingview.com"}
 </script>
+</div>
+</div>
+
 <div class="c" id="det"></div>
 <div class="c"><svg id="ch" viewBox="0 0 400 180"></svg>
 <div class="n">طلایی: قیمت، آبی: EMA20، بنفش: EMA50</div></div>
-<p class="n">فقط ابزار تحلیلی است و توصیه‌ی مالی نیست. داده ممکن است چند دقیقه تأخیر داشته باشد. قبل از معامله بک‌تست کنید.</p>
+<p class="n">فقط ابزار تحلیلی است و توصیه‌ی مالی نیست. سیگنال هر ۵ دقیقه بروز می‌شود. قبل از معامله بک‌تست کنید.</p>
+
 <script>
 var T=function(x){return x>0?"خرید":x<0?"فروش":"خنثی"},C=function(x){return x>0?"b":x<0?"s":"h"};
-function load(){
-fetch("signal.json?t="+Date.now()).then(function(r){return r.json()}).then(function(d){
-var S={BUY:["🟢 خرید","b"],SELL:["🔴 فروش","s"],HOLD:["🟡 صبر کنید","h"]}[d.signal];
-var e=document.getElementById("sig");e.textContent=S[0];e.className=S[1];
-document.getElementById("sc").textContent="قیمت: "+d.price+" — امتیاز: "+d.score+" از ۳";
-document.getElementById("lv").innerHTML=d.signal==="HOLD"?"":
-'<div>ورود<b>'+d.entry+'</b></div><div>تارگت<b class="b">'+d.tp+'</b></div><div>حد ضرر<b class="s">'+d.sl+'</b></div>';
-var m=Math.round((Date.now()-new Date(d.updated))/60000);
-document.getElementById("up").textContent="آخرین بروزرسانی: "+m+" دقیقه پیش"+(m>30?" (قدیمی است، بازار ممکن است بسته باشد)":"");
-document.getElementById("det").innerHTML=
-'<div class="row"><span>EMA20 / EMA50 ('+d.ema20+' / '+d.ema50+')</span><b class="'+C(d.votes[0])+'">'+T(d.votes[0])+'</b></div>'+
-'<div class="row"><span>RSI = '+d.rsi+'</span><b class="'+C(d.votes[1])+'">'+T(d.votes[1])+'</b></div>'+
-'<div class="row"><span>MACD هیستوگرام = '+d.hist+'</span><b class="'+C(d.votes[2])+'">'+T(d.votes[2])+'</b></div>'+
-'<div class="n" style="margin-top:6px">ATR = '+d.atr+' (حد ضرر ۱٫۵ و تارگت ۳ برابر ATR)</div>';
-var N=d.closes.length,all=d.closes.concat(d.e20,d.e50),mn=Math.min.apply(0,all),mx=Math.max.apply(0,all);
-var pl=function(a,c,w){var s="";for(var i=0;i<N;i++)s+=(i*400/(N-1)).toFixed(1)+","+(170-(a[i]-mn)/(mx-mn||1)*160).toFixed(1)+" ";
-return '<polyline fill="none" stroke="'+c+'" stroke-width="'+w+'" points="'+s+'"/>'};
-document.getElementById("ch").innerHTML=pl(d.closes,"#d4a017",2)+pl(d.e20,"#3b82f6",1.4)+pl(d.e50,"#a855f7",1.4);
-}).catch(function(){document.getElementById("up").textContent="هنوز signal.json ساخته نشده. در تب Actions گردش کار را یک بار اجرا کنید."});
+function el(i){return document.getElementById(i)}
+
+function live(){
+  fetch("https://api.gold-api.com/price/XAU")
+    .then(function(r){return r.json()})
+    .then(function(d){
+      var p=Number(d.price);
+      if(!(p>0))throw 0;
+      el("liveP").textContent=p.toFixed(2);
+      el("liveT").textContent=new Date().toLocaleTimeString("fa-IR");
+    })
+    .catch(function(){el("liveT").textContent="خطا در دریافت قیمت لحظه‌ای"});
 }
+
+function load(){
+  fetch("signal.json?t="+Date.now())
+    .then(function(r){return r.json()})
+    .then(function(d){
+      var S={BUY:["🟢 خرید","b"],SELL:["🔴 فروش","s"],HOLD:["🟡 صبر کنید","h"]}[d.signal]||["🟡 صبر کنید","h"];
+      el("sig").textContent=S[0];el("sig").className=S[1];
+      el("sc").textContent="قیمت: "+d.price+" — امتیاز: "+d.score+" از ۳";
+      el("lv").innerHTML=(d.signal==="BUY"||d.signal==="SELL")?
+        '<div>ورود<b>'+d.entry+'</b></div><div>تارگت<b class="b">'+d.tp+'</b></div><div>حد ضرر<b class="s">'+d.sl+'</b></div>':"";
+      var m=Math.round((Date.now()-new Date(d.updated))/60000);
+      el("up").textContent="آخرین بروزرسانی سیگنال: "+m+" دقیقه پیش"+(m>30?" (قدیمی است، بازار ممکن است بسته باشد)":"");
+      var v=d.votes||[0,0,0];
+      el("det").innerHTML=
+        '<div class="row"><span>EMA20 / EMA50 ('+d.ema20+' / '+d.ema50+')</span><b class="'+C(v[0])+'">'+T(v[0])+'</b></div>'+
+        '<div class="row"><span>RSI = '+d.rsi+'</span><b class="'+C(v[1])+'">'+T(v[1])+'</b></div>'+
+        '<div class="row"><span>MACD هیستوگرام = '+d.hist+'</span><b class="'+C(v[2])+'">'+T(v[2])+'</b></div>'+
+        '<div class="n" style="margin-top:6px">ATR = '+d.atr+' (حد ضرر ۱٫۵ و تارگت ۳ برابر ATR)</div>';
+      var N=(d.closes||[]).length;
+      if(N<2){el("ch").innerHTML="";return}
+      var all=d.closes.concat(d.e20,d.e50),mn=Math.min.apply(0,all),mx=Math.max.apply(0,all);
+      var pl=function(a,c,w){var s="";for(var i=0;i<N;i++)s+=(i*400/(N-1)).toFixed(1)+","+(170-(a[i]-mn)/(mx-mn||1)*160).toFixed(1)+" ";
+        return '<polyline fill="none" stroke="'+c+'" stroke-width="'+w+'" points="'+s+'"/>'};
+      el("ch").innerHTML=pl(d.closes,"#d4a017",2)+pl(d.e20,"#3b82f6",1.4)+pl(d.e50,"#a855f7",1.4);
+    })
+    .catch(function(){el("up").textContent="هنوز signal.json ساخته نشده. در تب Actions گردش کار را یک بار اجرا کنید."});
+}
+
+live();setInterval(live,10000);
 load();setInterval(load,60000);
 </script>
 </body>
