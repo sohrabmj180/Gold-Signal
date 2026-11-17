@@ -17,8 +17,16 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch
 import pandas as pd
 
-SYMBOL, INTERVAL = "XAUUSD=X", "5m"
+INTERVAL = "5m"
 ATR_SL, ATR_TP = 1.5, 3.0
+
+# Price sources, tried in order. XAUUSD=X is SPOT gold (what your broker shows).
+# If Yahoo gives no data for it, the bot falls back to GC=F (futures), which is a few
+# dollars ABOVE spot, so PREMIUM is subtracted from the futures prices to approximate spot.
+# To calibrate PREMIUM: compare "price" in signal.json with the live spot price,
+# then set PREMIUM = old PREMIUM + (price in signal.json - live spot price).
+SYMBOLS = ["XAUUSD=X", "GC=F"]
+PREMIUM = 2.0
 
 # ---- Message formats: edit freely ----
 NAME = "XAUUSD"
@@ -404,14 +412,33 @@ def notify_result(t):
     tg_text(text, reply_to=t.get("msg_id"))
 
 
-def main():
+def load_prices():
+    """Returns (candles, source). Spot first; futures minus PREMIUM as a fallback."""
     import yfinance as yf
-    df = yf.download(SYMBOL, period="5d", interval=INTERVAL, progress=False, auto_adjust=True)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df = df.dropna()
+    for sym in SYMBOLS:
+        try:
+            d = yf.download(sym, period="5d", interval=INTERVAL, progress=False, auto_adjust=True)
+            if isinstance(d.columns, pd.MultiIndex):
+                d.columns = d.columns.get_level_values(0)
+            d = d.dropna()
+        except Exception as e:
+            print("Download failed for", sym, "-", e)
+            continue
+        if len(d) < 60:
+            print("Not enough data for", sym, "- rows:", len(d))
+            continue
+        if sym == "GC=F":
+            d[["Open", "High", "Low", "Close"]] = d[["Open", "High", "Low", "Close"]] - PREMIUM
+        print("Price source:", sym, "| last candle:", d.index[-1])
+        return d, sym
+    raise SystemExit("No price data from any source")
+
+
+def main():
+    df, source = load_prices()
 
     out, ema20, ema50 = compute_signal(df)
+    out["source"] = source
 
     try:
         prev = json.load(open("signal.json")).get("signal")   # avoid repeating the same alert
