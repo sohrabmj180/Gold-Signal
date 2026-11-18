@@ -1,1 +1,24 @@
-{"last_signal": "HOLD", "last_daily": "2026-11-18", "last_weekly": "", "last_monthly": ""}
+{
+ "version": 1,
+ "last_processed_time": "2026-11-18T21:00:00+00:00",
+ "open": {
+  "BUY": null,
+  "SELL": null
+ },
+ "last_signal_time": {
+  "BUY": null,
+  "SELL": null
+ },
+ "last_sl_time": {
+  "BUY": null,
+  "SELL": null
+ },
+ "signals": {},
+ "unsent": [],
+ "reports": {
+  "daily": "",
+  "weekly": "",
+  "monthly": ""
+ },
+ "next_id": 1
+}
