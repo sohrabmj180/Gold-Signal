@@ -1,321 +1,314 @@
 """
-Gold signal - GitHub Actions version (runs once every 5 min).
-Environment variables: TG_TOKEN, TG_CHAT_ID
-Educational tool only - not financial advice.
+Gold signal bot - GitHub Actions entry point (runs once per call).
+Env: TG_TOKEN, TG_CHAT_ID.   Rules live in strategy.py, state handling in engine.py, constants in config.py.
+The bot NEVER edits config.py (MODE is changed by the owner by hand).
+Test/educational signals only - not financial advice.
 """
-import os, json, time, datetime as dt
+import os, io, re, csv, json, math, time, tempfile, traceback
+import datetime as dt
 from zoneinfo import ZoneInfo
-import requests, pandas as pd, yfinance as yf, jdatetime
+import numpy as np
+import pandas as pd
+import requests
+import jdatetime
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
-# ================= settings =================
-CANDLE_SYMBOL = "GC=F"          # futures candles, shifted to spot level (see get_candles)
-INTERVAL = "5m"
-ATR_SL, ATR_TP = 1.5, 3.0       # stop = 1.5 ATR, target = 3 ATR  -> 2R
-RR = ATR_TP / ATR_SL
-CANDLE_REFRESH = 60             # seconds: re-download candles + indicators
-PRICE_REFRESH = 10              # seconds: live price check (TP/SL detection)
-MAX_PRICE_GAP = 30              # ignore live price if it differs this much from candles
-REPORT_HOUR = 22                # reports at 22:00 Tehran time
-NAME = "XAUUSD"
-TEMPLATE = "{name} {side}\nEntry: {entry}\nTP: {tp}\nSL: {sl}"
-SIDE = {"BUY": "Buy", "SELL": "Sell"}
-# ============================================
+import config as C
+import strategy as S
+import engine as E
 
 TZ = ZoneInfo("Asia/Tehran")
-DATA_DIR = os.getenv("DATA_DIR", ".")
-os.makedirs(DATA_DIR, exist_ok=True)
-TRADES_FILE = os.path.join(DATA_DIR, "trades.json")
-STATE_FILE = os.path.join(DATA_DIR, "state.json")
+TF = S.TF
 
-def load_json(path, default):
+# ------------------------------------------------------------------ helpers
+def paths(wd="."):
+    j = lambda n: os.path.join(wd, n)
+    return {"signal": j(C.SIGNAL_FILE), "log": j(C.LOG_FILE), "state": j(C.STATE_FILE),
+            "error": j(C.ERROR_FILE), "news": j(C.NEWS_FILE),
+            "chart": os.path.join(tempfile.gettempdir(), "gold_chart.png")}
+
+def mask(text):
+    """Never let the Telegram token reach a log or a public file."""
+    text = str(text)
+    tok = os.getenv("TG_TOKEN")
+    if tok:
+        text = text.replace(tok, "***")
+    return re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***", text)
+
+def clean(o):
+    """Make any structure JSON-safe: NaN / Infinity -> None."""
+    if isinstance(o, (float, np.floating)):
+        f = float(o)
+        return f if math.isfinite(f) else None
+    if isinstance(o, np.integer):
+        return int(o)
+    if isinstance(o, np.bool_):
+        return bool(o)
+    if isinstance(o, pd.Timestamp):
+        return o.isoformat()
+    if isinstance(o, dict):
+        return {str(k): clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [clean(v) for v in o]
+    return o
+
+def dumps(obj):
+    return json.dumps(clean(obj), ensure_ascii=False, allow_nan=False, indent=1)
+
+def atomic_write(path, text):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+def write_if_changed(path, text, normalize=None):
+    """Write atomically only when the content really changed (keeps git history quiet)."""
     try:
-        with open(path) as f:
-            return json.load(f)
+        with open(path, encoding="utf-8") as f:
+            old = f.read()
+        if old == text or (normalize and normalize(old) == normalize(text)):
+            return False
+    except FileNotFoundError:
+        pass
+    atomic_write(path, text)
+    return True
+
+def _without_generated_at(text):
+    try:
+        d = json.loads(text); d.pop("generated_at", None); return d
     except Exception:
-        return default
+        return text
 
-def save_json(path, obj):
-    try:
-        with open(path, "w") as f:
-            json.dump(obj, f)
-    except Exception as e:
-        print("save error:", e)
-
-TRADES = load_json(TRADES_FILE, [])
-STATE = load_json(STATE_FILE, {"last_signal": None, "last_daily": "", "last_weekly": "", "last_monthly": ""})
-S = {"df": None, "a": None, "latest": {"signal": "HOLD", "price": 0, "score": 0, "votes": [0, 0, 0],
-     "rsi": 0, "atr": 0, "ema20": 0, "ema50": 0, "hist": 0, "closes": [], "e20": [], "e50": [],
-     "updated": dt.datetime.now(dt.timezone.utc).isoformat()}}
-
-def utcnow():
-    return dt.datetime.now(dt.timezone.utc)
-
-# ---------------- Telegram ----------------
+# ------------------------------------------------------------------ telegram
 def tg(method, data=None, files=None):
     tok, chat = os.getenv("TG_TOKEN"), os.getenv("TG_CHAT_ID")
     if not (tok and chat):
         print("Telegram not configured")
         return None
-    data = dict(data or {})
-    data["chat_id"] = chat
+    data = dict(data or {}); data["chat_id"] = chat
     try:
         r = requests.post(f"https://api.telegram.org/bot{tok}/{method}", data=data, files=files, timeout=30)
         j = r.json()
         if not j.get("ok"):
-            print("Telegram error:", j)
-        return j.get("result")
+            print("Telegram error:", mask(j))
+            return None
+        return j.get("result") or {}
     except Exception as e:
-        print("Telegram exception:", e)
+        print("Telegram exception:", mask(e))
         return None
 
-# ---------------- data + indicators ----------------
-def get_candles():
-    """Futures candles (GC=F) shifted so they sit on the live SPOT price level."""
-    df = yf.download(CANDLE_SYMBOL, period="5d", interval=INTERVAL, progress=False, auto_adjust=True)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df = df.dropna()
-    if len(df) < 60:
-        return None
-    if df.index.tz is None:
-        df.index = df.index.tz_localize("UTC")
-    spot = live_price(None)
-    if spot:
-        off = spot - float(df["Close"].iloc[-1])
-        if abs(off) <= MAX_PRICE_GAP:
-            df[["Open", "High", "Low", "Close"]] = df[["Open", "High", "Low", "Close"]] + off
-    return df
+def _mode_prefix():
+    return "🧪 آزمایشی | " if S.effective_mode() == "TEST" else ""
 
-def live_price(ref):
-    """Spot gold live price. Returns None if unavailable or too far from candles."""
-    try:
-        p = float(requests.get("https://api.gold-api.com/price/XAU", timeout=8).json()["price"])
-        if p > 0 and (ref is None or abs(p - ref) <= MAX_PRICE_GAP):
-            return p
-    except Exception:
-        pass
-    return None
+def make_caption(sig, delay):
+    head = f"{_mode_prefix()}{C.NAME} {C.SIDE_LABEL[sig['side']]}"
+    if C.SOURCE_TYPE == "FUTURES":                         # no absolute prices on futures data
+        lines = [head, "Entry: ≈ market", f"SL distance: {sig['sl_distance']:.2f}$",
+                 f"TP distance: {sig['tp_distance']:.2f}$"]
+    else:
+        lines = [head, f"Entry: ≈ {sig['entry']}", f"TP: {sig['tp']}", f"SL: {sig['sl']}"]
+    if delay:
+        lines.append(f"⏱ تأخیر {delay} دقیقه")
+    lines.append(C.DISCLAIMER)
+    return "\n".join(lines)
 
-def analyze(df):
-    c, h, l = df["Close"], df["High"], df["Low"]
-    e20 = c.ewm(span=20, adjust=False).mean()
-    e50 = c.ewm(span=50, adjust=False).mean()
-    macd = c.ewm(span=12, adjust=False).mean() - c.ewm(span=26, adjust=False).mean()
-    hist = macd - macd.ewm(span=9, adjust=False).mean()
-    d = c.diff()
-    gain = d.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
-    loss = (-d.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
-    rsi = 100 - 100 / (1 + gain / loss)
-    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
-    atr = tr.ewm(alpha=1/14, adjust=False).mean()
-    v1 = 1 if e20.iloc[-1] > e50.iloc[-1] else -1
-    r = float(rsi.iloc[-1])
-    v2 = 1 if r < 30 else -1 if r > 70 else 0
-    v3 = 1 if hist.iloc[-1] > 0 else -1
-    return {"price": float(c.iloc[-1]), "rsi": round(r, 1), "atr": float(atr.iloc[-1]),
-            "ema20": round(float(e20.iloc[-1]), 2), "ema50": round(float(e50.iloc[-1]), 2),
-            "hist": round(float(hist.iloc[-1]), 3), "votes": [v1, v2, v3], "score": v1 + v2 + v3,
-            "closes": [round(float(x), 2) for x in c.tail(80)],
-            "e20": [round(float(x), 2) for x in e20.tail(80)],
-            "e50": [round(float(x), 2) for x in e50.tail(80)],
-            "e20s": e20, "e50s": e50}
-
-def side_of(score):
-    return "BUY" if score >= 2 else "SELL" if score <= -2 else "HOLD"
-
-# ---------------- trades ----------------
-def open_trade():
-    for t in TRADES:
-        if t["status"] == "open":
-            return t
-    return None
-
-def make_chart(df, a, tr, path="/tmp/chart.png"):
+def make_chart(df, sig, path):
     d = df.tail(80)
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=130)
     for x, (_, r) in enumerate(d.iterrows()):
         col = "#26a69a" if r["Close"] >= r["Open"] else "#ef5350"
         ax.vlines(x, r["Low"], r["High"], color=col, linewidth=1)
         ax.vlines(x, r["Open"], r["Close"], color=col, linewidth=4)
-    ax.plot(range(len(d)), a["e20s"].tail(80).values, color="#3b82f6", linewidth=1, label="EMA20")
-    ax.plot(range(len(d)), a["e50s"].tail(80).values, color="#a855f7", linewidth=1, label="EMA50")
+    for n, colr in ((20, "#3b82f6"), (50, "#a855f7"), (200, "#f59e0b")):
+        ax.plot(range(len(d)), d[f"ema{n}"].values, color=colr, linewidth=1, label=f"EMA{n}")
+    futures = C.SOURCE_TYPE == "FUTURES"
     for key, color in (("entry", "#d4a017"), ("tp", "#26a69a"), ("sl", "#ef5350")):
-        ax.axhline(tr[key], color=color, linestyle="--", linewidth=1)
-        ax.text(len(d) - 1, tr[key], f" {key.upper()} {tr[key]}", color=color, va="bottom", ha="right", fontsize=8)
-    lo = min(float(d["Low"].min()), tr["sl"], tr["tp"]); hi = max(float(d["High"].max()), tr["sl"], tr["tp"])
+        v = sig[key]
+        ax.axhline(v, color=color, linestyle="--", linewidth=1)
+        label = key.upper() if key == "entry" else f"{key.upper()} {v - sig['entry']:+.1f}$"
+        ax.text(len(d) - 1, v, " " + (label if futures else f"{key.upper()} {v}"), color=color,
+                va="bottom", ha="right", fontsize=8)
+    lo = min(float(d["Low"].min()), sig["sl"], sig["tp"]); hi = max(float(d["High"].max()), sig["sl"], sig["tp"])
     pad = (hi - lo) * 0.05
     ax.set_ylim(lo - pad, hi + pad)
-    ax.set_title(f"{NAME} {SIDE[tr['side']]}  ({INTERVAL})", fontsize=11)
+    if futures:
+        ax.set_yticks([])                                  # hide absolute futures prices
+    ax.set_title(f"{C.NAME} {C.SIDE_LABEL[sig['side']]}  (M15)" + ("  TEST" if S.effective_mode() == "TEST" else ""),
+                 fontsize=11)
     ax.legend(loc="upper left", fontsize=7)
-    ax.grid(alpha=0.2)
-    ax.set_xticks([])
-    fig.tight_layout()
-    fig.savefig(path)
-    plt.close(fig)
+    ax.grid(alpha=0.2); ax.set_xticks([])
+    fig.tight_layout(); fig.savefig(path); plt.close(fig)
     return path
 
-def open_new(side, df, a):
-    live = live_price(a["price"])
-    entry = live if live else a["price"]
-    atr = a["atr"]
-    if side == "BUY":
-        sl, tp = entry - ATR_SL * atr, entry + ATR_TP * atr
-    else:
-        sl, tp = entry + ATR_SL * atr, entry - ATR_TP * atr
-    tr = {"id": int(time.time()), "side": side, "entry": round(entry, 2), "sl": round(sl, 2), "tp": round(tp, 2),
-          "open_time": utcnow().isoformat(), "status": "open", "msg_id": None}
-    caption = TEMPLATE.format(name=NAME, side=SIDE[side], entry=tr["entry"], tp=tr["tp"], sl=tr["sl"])
-    with open(make_chart(df, a, tr), "rb") as f:
-        res = tg("sendPhoto", {"caption": caption}, {"photo": f})
-    if res:
-        tr["msg_id"] = res.get("message_id")
-    TRADES.append(tr)
-    save_json(TRADES_FILE, TRADES)
-    print("OPENED", tr)
+def make_sender(df, tg_fn, P):
+    def send(sig, delay):
+        with open(make_chart(df, sig, P["chart"]), "rb") as f:
+            res = tg_fn("sendPhoto", {"caption": make_caption(sig, delay)}, {"photo": f})
+        return res["message_id"] if res and "message_id" in res else False
+    return send
 
-def close_trade(tr, status):
-    tr["status"] = status
-    tr["close_time"] = utcnow().isoformat()
-    if status == "tp":
-        tr["r"], tr["pts"] = RR, round(abs(tr["tp"] - tr["entry"]), 2)
-        text = f"Tp ✅ +{RR:g}R"
-    else:
-        tr["r"], tr["pts"] = -1, -round(abs(tr["entry"] - tr["sl"]), 2)
-        text = "SL ❌ -1R"
-    save_json(TRADES_FILE, TRADES)
-    data = {"text": text}
-    if tr.get("msg_id"):
-        data["reply_to_message_id"] = tr["msg_id"]
-    tg("sendMessage", data)
-    print("CLOSED", tr)
+def result_text(sig):
+    if sig["status"] == "TP":
+        return f"Tp ✅ {float(sig['result_r']):+g}R"
+    if sig["status"] == "SL":
+        return f"SL ❌ {float(sig['result_r']):+g}R"
+    return f"Expired ⏱ {float(sig['result_r']):+g}R"
 
-def check_price(tr, price):
-    if tr["side"] == "BUY":
-        hit_tp, hit_sl = price >= tr["tp"], price <= tr["sl"]
-    else:
-        hit_tp, hit_sl = price <= tr["tp"], price >= tr["sl"]
-    if hit_sl:
-        close_trade(tr, "sl")
-    elif hit_tp:
-        close_trade(tr, "tp")
+def send_reply(tg_fn, sig):
+    for _ in range(C.TG_RETRIES):
+        if tg_fn("sendMessage", {"text": result_text(sig), "reply_to_message_id": sig["msg_id"]}) is not None:
+            return True
+    return False
 
-def check_candles(tr, df):
-    """Catches TP/SL touched between live-price checks. If both hit in one candle, SL wins (conservative)."""
-    opened = pd.Timestamp(tr["open_time"])
-    for ts, r in df[df.index > opened].iterrows():
-        hi, lo = float(r["High"]), float(r["Low"])
-        if tr["side"] == "BUY":
-            hit_tp, hit_sl = hi >= tr["tp"], lo <= tr["sl"]
-        else:
-            hit_tp, hit_sl = lo <= tr["tp"], hi >= tr["sl"]
-        if hit_sl:
-            return close_trade(tr, "sl")
-        if hit_tp:
-            return close_trade(tr, "tp")
+# ------------------------------------------------------------------ log (signals_log.csv)
+def load_log(path):
+    if not os.path.exists(path):
+        return []
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
 
-# ---------------- reports ----------------
+def log_text(rows):
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=C.LOG_COLUMNS, extrasaction="ignore", lineterminator="\n")
+    w.writeheader()
+    for r in rows:
+        w.writerow({k: ("" if r.get(k) is None else r.get(k)) for k in C.LOG_COLUMNS})
+    return buf.getvalue()
+
+def _row(sg):
+    return {"id": sg["id"], "time_utc": sg["time_utc"], "side": sg["side"], "reference": sg["reference_price"],
+            "entry": sg["entry"], "sl": sg["sl"], "tp": sg["tp"], "r": sg["r"], "status": sg["status"],
+            "result_r": sg["result_r"], "close_time_utc": sg["close_time_utc"], "delivery": sg["delivery"]}
+
+def apply_events(rows, events):
+    byid = {str(r["id"]): r for r in rows}
+    for e in events:
+        sg, key = e["signal"], str(e["signal"]["id"])
+        if e["type"] == "SIGNAL_CREATED":
+            row = _row(sg); byid[key] = row; rows.append(row)
+        elif key in byid:
+            byid[key].update({"status": sg["status"], "result_r": sg["result_r"],
+                              "close_time_utc": sg["close_time_utc"], "delivery": sg["delivery"]})
+    return rows
+
+# ------------------------------------------------------------------ site payload
+def build_payload(prep, res, state, news_stale, now):
+    futures = C.SOURCE_TYPE == "FUTURES"
+    p = {"status": "HOLD", "reason": None, "time_utc": None, "price": None, "entry": None, "sl": None, "tp": None,
+         "sl_distance": None, "tp_distance": None, "r": None, "atr": None, "adx": None, "above_ema200": None,
+         "delayed_minutes": None, "mode": S.effective_mode(), "source_type": C.SOURCE_TYPE,
+         "news_file_stale": bool(news_stale), "disclaimer": C.DISCLAIMER, "generated_at": now.isoformat()}
+    if not prep["ok"]:
+        p["reason"] = prep["reason"]
+        return p
+    last = prep["df"].iloc[-1]
+    p.update(atr=round(float(last["atr"]), 2), adx=round(float(last["adx"]), 2),
+             above_ema200=bool(last["Close"] > last["ema200"]),
+             price=None if futures else round(float(last["Close"]), 2))
+    shown = [r for r in state["signals"].values() if r["status"] == "OPEN" and r["delivery"] == "sent"]
+    if shown:                                              # only signals that were really published
+        r = max(shown, key=lambda x: x["time_utc"])
+        p.update(status=r["side"], reason=None, time_utc=r["time_utc"],
+                 entry=None if futures else r["entry"], sl=None if futures else r["sl"],
+                 tp=None if futures else r["tp"], sl_distance=r["sl_distance"], tp_distance=r["tp_distance"],
+                 r=round(r["tp_distance"] / r["sl_distance"], 2),
+                 delayed_minutes=int(r["delayed_minutes"]) if r.get("late") else 0)
+        return p
+    ev = (res or {}).get("last_eval") or {}
+    p["reason"] = ev.get("reason") if ev.get("status") == "HOLD" else "open_signal"
+    p["time_utc"] = ev.get("time_utc")
+    return p
+
+# ------------------------------------------------------------------ reports (from the log, published signals only)
 def jal(d):
     j = jdatetime.date.fromgregorian(date=d)
     return j.year, j.month, j.day
 
-def closed_where(pred):
+def closed_published(rows):
     out = []
-    for t in TRADES:
-        if t["status"] != "open":
-            d = dt.datetime.fromisoformat(t["close_time"]).astimezone(TZ).date()
-            if pred(d):
-                out.append(t)
+    for r in rows:
+        if r.get("status") in ("TP", "SL", "EXPIRED") and r.get("delivery") == "sent" and r.get("close_time_utc"):
+            out.append((pd.Timestamp(r["close_time_utc"]).tz_convert(TZ).date(), r))
     return out
 
 def report_text(title, trs):
+    label = "🧪 آزمایشی | " if S.effective_mode() == "TEST" else ""
     if not trs:
-        return f"📊 {title}\n\nمعامله‌ی بسته‌شده‌ای نبود."
-    w = sum(1 for t in trs if t["status"] == "tp")
-    l = len(trs) - w
-    net = sum(t["r"] for t in trs)
-    pts = sum(t["pts"] for t in trs)
-    return (f"📊 {title}\n\nتعداد معاملات: {len(trs)}\n✅ سود: {w}\n❌ ضرر: {l}\n"
-            f"نرخ برد: {w * 100 / len(trs):.0f}%\nبرآیند: {net:+g}R ({pts:+.2f} دلار)")
+        return f"📊 {label}{title}\n\nسیگنال بسته‌شده‌ای نبود."
+    n = len(trs)
+    w = sum(1 for t in trs if t["status"] == "TP"); l = sum(1 for t in trs if t["status"] == "SL"); x = n - w - l
+    net = sum(float(t["result_r"]) for t in trs)
+    return (f"📊 {label}{title}\n\nتعداد سیگنال بسته‌شده: {n}\n✅ TP: {w}\n❌ SL: {l}\n⏱ انقضا: {x}\n"
+            f"نرخ برد: {w * 100 / n:.0f}%\nمجموع: {net:+.2f}R\n{C.DISCLAIMER}")
 
-def check_reports():
-    now = dt.datetime.now(TZ)
-    if now.hour < REPORT_HOUR:
-        return
-    today = now.date()
-    iso = today.isoformat()
-    if STATE["last_daily"] != iso:
-        tg("sendMessage", {"text": report_text("گزارش روزانه", closed_where(lambda d: d == today))})
-        STATE["last_daily"] = iso
-        save_json(STATE_FILE, STATE)
-    if now.weekday() == 4 and STATE["last_weekly"] != iso:      # Friday
-        start = today - dt.timedelta(days=6)                    # Saturday..Friday
-        tg("sendMessage", {"text": report_text("گزارش هفتگی", closed_where(lambda d: start <= d <= today))})
-        STATE["last_weekly"] = iso
-        save_json(STATE_FILE, STATE)
-    if jal(today + dt.timedelta(days=1))[2] == 1 and STATE["last_monthly"] != iso:   # last day of Jalali month
+def check_reports(rows, state, now, tg_fn):
+    t = now.tz_convert(TZ)
+    if t.hour < C.REPORT_HOUR:
+        return False
+    rep = state.setdefault("reports", {"daily": "", "weekly": "", "monthly": ""})
+    today, iso, changed = t.date(), t.date().isoformat(), False
+    closed = closed_published(rows)
+    if rep["daily"] != iso:
+        trs = [r for d, r in closed if d == today]
+        if trs or C.REPORT_EMPTY_DAILY:
+            ok = tg_fn("sendMessage", {"text": report_text("گزارش روزانه", trs)}) is not None
+        else:
+            ok = True
+        if ok:
+            rep["daily"] = iso; changed = True
+    if t.weekday() == 4 and rep["weekly"] != iso:                       # Friday: Saturday..Friday
+        start = today - dt.timedelta(days=6)
+        trs = [r for d, r in closed if start <= d <= today]
+        if tg_fn("sendMessage", {"text": report_text("گزارش هفتگی", trs)}) is not None:
+            rep["weekly"] = iso; changed = True
+    if jal(today + dt.timedelta(days=1))[2] == 1 and rep["monthly"] != iso:   # last day of the Jalali month
         ym = jal(today)[:2]
-        tg("sendMessage", {"text": report_text("گزارش ماهانه", closed_where(lambda d: jal(d)[:2] == ym))})
-        STATE["last_monthly"] = iso
-        save_json(STATE_FILE, STATE)
+        trs = [r for d, r in closed if jal(d)[:2] == ym]
+        if tg_fn("sendMessage", {"text": report_text("گزارش ماهانه", trs)}) is not None:
+            rep["monthly"] = iso; changed = True
+    return changed
 
-# ---------------- main logic ----------------
-def publish(live=None):
-    a = S["a"]
-    if not a:
-        return
-    out = {k: a[k] for k in ("rsi", "ema20", "ema50", "hist", "votes", "score", "closes", "e20", "e50")}
-    out.update(updated=utcnow().isoformat(), price=round(live if live else a["price"], 2),
-               atr=round(a["atr"], 2), signal="HOLD")
-    tr = open_trade()
-    if tr:
-        out.update(signal=tr["side"], entry=tr["entry"], tp=tr["tp"], sl=tr["sl"])
-    S["latest"] = out
+# ------------------------------------------------------------------ one run
+def run(now=None, fetch=None, tg_fn=None, workdir=".", sleep_fn=time.sleep):
+    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    if now.tzinfo is None:
+        now = now.tz_localize("UTC")
+    fetch, tg_fn, P = fetch or S.fetch_raw, tg_fn or tg, paths(workdir)
 
-def refresh():
-    df = get_candles()
-    if df is None:
-        print("no candles")
-        return
-    a = analyze(df)
-    S["df"], S["a"] = df, a
-    tr = open_trade()
-    if tr:
-        check_candles(tr, df)
-    side = side_of(a["score"])
-    if STATE["last_signal"] is None:                 # first run: just remember, don't trade
-        STATE["last_signal"] = side
-        save_json(STATE_FILE, STATE)
-    elif side != STATE["last_signal"]:
-        if side != "HOLD" and not open_trade():
-            open_new(side, df, a)
-        STATE["last_signal"] = side
-        save_json(STATE_FILE, STATE)
-    publish()
+    state = E.load_state(P["state"])                       # corrupt file -> exception -> error.json, old files stay
+    rows = load_log(P["log"])
+    news = S.load_news(P["news"])
+    stale = S.news_file_stale(news, now)
+    prep = S.prepare(fetch(), now)
 
-def tick():
-    a = S["a"]
-    if not a:
-        return
-    live = live_price(a["price"])
-    tr = open_trade()
-    if tr and live:
-        check_price(tr, live)
-    publish(live)
-    check_reports()
+    res, events = None, []
+    if prep["ok"]:
+        res = E.process(prep["df"], state, news, now, make_sender(prep["df"], tg_fn, P), sleep_fn)
+        events = res["events"]
+        apply_events(rows, events)
+    write_if_changed(P["log"], log_text(rows))             # save BEFORE replies so a crash cannot re-send signals
+    write_if_changed(P["state"], dumps(state))
+    for e in events:
+        if e["type"] == "SIGNAL_CLOSED" and e["signal"].get("msg_id"):
+            send_reply(tg_fn, e["signal"])
+    if check_reports(rows, state, now, tg_fn):
+        write_if_changed(P["state"], dumps(state))
+    payload = build_payload(prep, res, state, stale, now)
+    write_if_changed(P["signal"], dumps(payload), normalize=_without_generated_at)
+    return payload
 
 def main():
+    P = paths(".")
     try:
-        refresh()
-        tick()
-    except Exception as e:
-        print("error:", e)
-    # always write files so the workflow can commit them
-    save_json(os.path.join(DATA_DIR, "signal.json"), S["latest"])
-    save_json(TRADES_FILE, TRADES)
-    save_json(STATE_FILE, STATE)
+        run()
+        if os.path.exists(P["error"]):
+            os.remove(P["error"])
+    except Exception as e:                                 # keep the previous signal.json, record the error
+        err = {"time_utc": dt.datetime.now(dt.timezone.utc).isoformat(), "error": mask(repr(e)),
+               "trace": mask(traceback.format_exc()[-1500:])}
+        atomic_write(P["error"], dumps(err))
+        print("ERROR:", err["error"])
 
 if __name__ == "__main__":
     main()
