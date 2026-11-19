@@ -2,7 +2,7 @@
  "status": "HOLD",
  "reason": "no_session",
  "time_utc": "2026-11-19T22:30:00+00:00",
- "price": null,
+ "price": 3625.16,
  "entry": null,
  "sl": null,
  "tp": null,
@@ -14,8 +14,8 @@
  "above_ema200": false,
  "delayed_minutes": null,
  "mode": "TEST",
- "source_type": "FUTURES",
+ "source_type": "SPOT",
  "news_file_stale": true,
  "disclaimer": "این سیگنال‌ها آزمایشی/تست‌نشده‌اند، توصیه مالی نیستند و ریسک ضرر دارند.",
- "generated_at": "2026-11-19T22:30:55.244526+00:00"
+ "generated_at": "2026-11-19T22:35:36.850047+00:00"
 }
