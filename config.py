@@ -79,3 +79,8 @@ BACKTEST_MIN_TRADES = 300
 BACKTEST_SPLIT = 0.60             # first 60% of the TIME span vs last 40%
 BOOTSTRAP_N = 10000
 BOOTSTRAP_SEED = 12345
+# ---- Twelve Data (spot): later assignments override the lines above ----
+SOURCE_TYPE = "SPOT"
+PROVIDER = "TWELVEDATA"
+TD_SYMBOL = "XAU/USD"
+TD_OUTPUTSIZE = 1000
