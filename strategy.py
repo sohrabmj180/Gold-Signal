@@ -314,3 +314,29 @@ def fetch_raw():
         return parse_twelvedata(payload)
     except RuntimeError as e:
         raise RuntimeError(_scrub(e, key)) from None
+# =====================================================================
+# Owner change: one trading window (config.SESSIONS, Tehran time) and NO news filter.
+# Defined last on purpose: these replace the earlier definitions above.
+# =====================================================================
+def in_session(close_ts):
+    """Signals only while the candle-S close time is inside a window of config.SESSIONS
+    (start inclusive, end exclusive). Weekends and Friday after the cutoff stay closed."""
+    u = close_ts.tz_convert("UTC")
+    if u.weekday() >= 5:
+        return False
+    if u.weekday() == 4 and u.time() > _t(C.FRIDAY_CUTOFF_UTC):
+        return False
+    for tzname, a, b in C.SESSIONS:
+        loc = close_ts.tz_convert(ZoneInfo(tzname)).time()
+        if _t(a) <= loc < _t(b):
+            return True
+    return False
+
+def load_news(path=None):
+    return []                      # news filter removed
+
+def news_file_stale(news, now_utc):
+    return False                   # news filter removed -> no warning on the site
+
+def in_news_blackout(open_ts, close_ts, news):
+    return False                   # news filter removed
