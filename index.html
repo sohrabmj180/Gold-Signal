@@ -66,7 +66,7 @@ h1{font-size:20px;margin:0 0 4px;color:var(--gold)}
 <p class="n" id="disc"></p>
 
 <script>
-var REASONS={no_data:"داده‌ی کافی نیست",market_closed:"بازار بسته است",no_session:"خارج از سشن لندن/نیویورک",news_blackout:"بازه‌ی خبر (بلک‌اوت)",volatility_spike:"نوسان بیش‌ازحد کندل",open_signal:"یک سیگنال باز وجود دارد",cooldown:"کول‌داون بعد از ضرر",weak_trend:"روند به‌اندازه‌ی کافی قوی نیست",low_adx:"ADX پایین یا جهت DI ناسازگار",no_pullback:"پولبک کامل نشده",no_trigger:"تریگر ورود دیده نشد",sl_too_wide:"حد ضرر بیش‌ازحد بزرگ"};
+var REASONS={no_data:"داده‌ی کافی نیست",market_closed:"بازار بسته است",no_session:"خارج از ساعت کاری ربات (۵ صبح تا ۱۱ شب)",news_blackout:"بازه‌ی خبر (بلک‌اوت)",volatility_spike:"نوسان بیش‌ازحد کندل",open_signal:"یک سیگنال باز وجود دارد",cooldown:"کول‌داون بعد از ضرر",weak_trend:"روند به‌اندازه‌ی کافی قوی نیست",low_adx:"ADX پایین یا جهت DI ناسازگار",no_pullback:"پولبک کامل نشده",no_trigger:"تریگر ورود دیده نشد",sl_too_wide:"حد ضرر بیش‌ازحد بزرگ"};
 var SIDE={BUY:"🟢 خرید",SELL:"🔴 فروش"};
 function el(i){return document.getElementById(i)}
 function num(x,d){return (x===null||x===undefined||isNaN(x))?"-":Number(x).toFixed(d===undefined?2:d)}
