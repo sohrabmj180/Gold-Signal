@@ -271,3 +271,46 @@ def check_hit(sig, candle):
     if tp_hit:
         return "TP"
     return None
+# =====================================================================
+# Data source: Twelve Data (XAU/USD spot, M15, times requested in UTC).
+# Defined last on purpose: it replaces the earlier Yahoo (futures) fetch_raw above.
+# =====================================================================
+import os
+
+def _scrub(text, key):
+    text = str(text)
+    return text.replace(key, "***") if key else text
+
+def parse_twelvedata(payload):
+    """Twelve Data time_series JSON -> DataFrame (UTC index, Open/High/Low/Close floats, oldest first)."""
+    if not isinstance(payload, dict) or payload.get("status") != "ok" or not payload.get("values"):
+        msg = payload.get("message") if isinstance(payload, dict) else None
+        raise RuntimeError(f"TwelveData error: {msg or 'unexpected response'}")
+    df = pd.DataFrame(payload["values"])
+    out = pd.DataFrame({"Open": df["open"], "High": df["high"], "Low": df["low"], "Close": df["close"]}).astype(float)
+    out.index = pd.DatetimeIndex(pd.to_datetime(df["datetime"])).tz_localize("UTC")
+    return out.sort_index()
+
+def fetch_raw():
+    """Download M15 XAU/USD from Twelve Data. Needs the environment variable TD_KEY (GitHub secret).
+    The key is never put into an error message."""
+    import requests
+    key = os.getenv("TD_KEY")
+    if not key:
+        raise RuntimeError("TD_KEY is not set")
+    params = {"symbol": getattr(C, "TD_SYMBOL", "XAU/USD"), "interval": "15min",
+              "outputsize": getattr(C, "TD_OUTPUTSIZE", 1000), "timezone": "UTC", "apikey": key}
+    try:
+        r = requests.get("https://api.twelvedata.com/time_series", params=params, timeout=20)
+    except requests.RequestException as e:
+        raise RuntimeError("TwelveData request failed: " + type(e).__name__) from None
+    if r.status_code != 200:
+        raise RuntimeError(f"TwelveData HTTP {r.status_code}")
+    try:
+        payload = r.json()
+    except ValueError:
+        raise RuntimeError("TwelveData returned non-JSON") from None
+    try:
+        return parse_twelvedata(payload)
+    except RuntimeError as e:
+        raise RuntimeError(_scrub(e, key)) from None
