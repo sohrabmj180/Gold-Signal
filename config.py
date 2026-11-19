@@ -84,3 +84,5 @@ SOURCE_TYPE = "SPOT"
 PROVIDER = "TWELVEDATA"
 TD_SYMBOL = "XAU/USD"
 TD_OUTPUTSIZE = 1000
+# ---- Owner change: bot is ON 05:00 -> 23:00 Tehran time (23:00 = off) ----
+SESSIONS = (("Asia/Tehran", "05:00", "23:00"),)
