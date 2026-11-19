@@ -9,13 +9,13 @@
  "sl_distance": null,
  "tp_distance": null,
  "r": null,
- "atr": 9.25,
- "adx": 23.59,
+ "atr": 10.28,
+ "adx": 21.78,
  "above_ema200": false,
  "delayed_minutes": null,
  "mode": "TEST",
  "source_type": "FUTURES",
  "news_file_stale": true,
  "disclaimer": "این سیگنال‌ها آزمایشی/تست‌نشده‌اند، توصیه مالی نیستند و ریسک ضرر دارند.",
- "generated_at": "2026-11-19T05:00:57.756095+00:00"
+ "generated_at": "2026-11-19T05:05:40.001422+00:00"
 }
