@@ -114,31 +114,50 @@ def make_caption(sig, delay):
     return "\n".join(lines)
 
 def make_chart(df, sig, path):
-    d = df.tail(80)
+    """Candles + a TradingView-style Long/Short position tool: profit box (entry->TP) and loss box (entry->SL)."""
+    from matplotlib.patches import Rectangle
+    s_open = (pd.Timestamp(sig["time_utc"]) - TF) if sig.get("time_utc") else None
+    s_pos = int(df.index.get_indexer([s_open])[0]) if s_open is not None else -1
+    if s_pos < 0:
+        s_pos = len(df) - 1
+    start = max(0, s_pos - 45)
+    d = df.iloc[start:]
+    n, xs = len(d), s_pos - start
+    futures = C.SOURCE_TYPE == "FUTURES"
+    bg, fg, grid = "#0b1620", "#c9d1d9", "#2a3a46"
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=130)
+    fig.patch.set_facecolor(bg); ax.set_facecolor(bg)
     for x, (_, r) in enumerate(d.iterrows()):
         col = "#26a69a" if r["Close"] >= r["Open"] else "#ef5350"
         ax.vlines(x, r["Low"], r["High"], color=col, linewidth=1)
         ax.vlines(x, r["Open"], r["Close"], color=col, linewidth=4)
-    for n, colr in ((20, "#3b82f6"), (50, "#a855f7"), (200, "#f59e0b")):
-        ax.plot(range(len(d)), d[f"ema{n}"].values, color=colr, linewidth=1, label=f"EMA{n}")
-    futures = C.SOURCE_TYPE == "FUTURES"
-    for key, color in (("entry", "#d4a017"), ("tp", "#26a69a"), ("sl", "#ef5350")):
-        v = sig[key]
-        ax.axhline(v, color=color, linestyle="--", linewidth=1)
-        label = key.upper() if key == "entry" else f"{key.upper()} {v - sig['entry']:+.1f}$"
-        ax.text(len(d) - 1, v, " " + (label if futures else f"{key.upper()} {v}"), color=color,
-                va="bottom", ha="right", fontsize=8)
-    lo = min(float(d["Low"].min()), sig["sl"], sig["tp"]); hi = max(float(d["High"].max()), sig["sl"], sig["tp"])
-    pad = (hi - lo) * 0.05
-    ax.set_ylim(lo - pad, hi + pad)
+    entry, tp, sl = sig["entry"], sig["tp"], sig["sl"]
+    x0, x1 = xs + 0.5, n - 1 + 14
+    for a, b, colr in ((min(entry, tp), max(entry, tp), "#26a69a"), (min(entry, sl), max(entry, sl), "#ef5350")):
+        ax.add_patch(Rectangle((x0, a), x1 - x0, b - a, facecolor=colr, alpha=0.22, edgecolor=colr, linewidth=1))
+    ax.plot([x0, x1], [entry, entry], color="#4c8dff", linewidth=1.3)
+    mid = (x0 + x1) / 2
+    tp_txt = f"TP  {abs(tp - entry):.1f}$  ({C.RR:g}R)" if futures else f"TP  {tp}"
+    sl_txt = f"SL  {abs(sl - entry):.1f}$  (1R)" if futures else f"SL  {sl}"
+    ax.text(mid, (entry + tp) / 2, tp_txt, color="white", ha="center", va="center", fontsize=9, fontweight="bold")
+    ax.text(mid, (entry + sl) / 2, sl_txt, color="white", ha="center", va="center", fontsize=9, fontweight="bold")
+    ax.text(x1 - 0.3, entry, "Entry ≈ " if futures else f"Entry ≈ {entry}", color="#4c8dff",
+            ha="right", va="bottom", fontsize=7)
+    lo = min(float(d["Low"].min()), sl, tp); hi = max(float(d["High"].max()), sl, tp)
+    pad = (hi - lo) * 0.06
+    ax.set_ylim(lo - pad, hi + pad); ax.set_xlim(-1, x1 + 1)
+    side_col = "#26a69a" if sig["side"] == "BUY" else "#ef5350"
+    ax.set_title(f"{C.NAME} {C.SIDE_LABEL[sig['side']].upper()}  M15" + ("   TEST" if S.effective_mode() == "TEST" else ""),
+                 fontsize=11, color=side_col, loc="left", fontweight="bold")
+    ax.grid(color=grid, alpha=0.25, linewidth=0.5)
+    for sp in ax.spines.values():
+        sp.set_color(grid)
+    ax.set_xticks([])
     if futures:
         ax.set_yticks([])                                  # hide absolute futures prices
-    ax.set_title(f"{C.NAME} {C.SIDE_LABEL[sig['side']]}  (M15)" + ("  TEST" if S.effective_mode() == "TEST" else ""),
-                 fontsize=11)
-    ax.legend(loc="upper left", fontsize=7)
-    ax.grid(alpha=0.2); ax.set_xticks([])
-    fig.tight_layout(); fig.savefig(path); plt.close(fig)
+    else:
+        ax.yaxis.tick_right(); ax.tick_params(axis="y", colors=fg, labelsize=7)
+    fig.tight_layout(); fig.savefig(path, facecolor=bg); plt.close(fig)
     return path
 
 def make_sender(df, tg_fn, P):
