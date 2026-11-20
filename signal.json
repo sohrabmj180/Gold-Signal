@@ -1,21 +1,21 @@
 {
  "status": "HOLD",
  "reason": "no_trigger",
- "time_utc": "2026-11-20T06:30:00+00:00",
- "price": 3552.57,
+ "time_utc": "2026-11-20T06:45:00+00:00",
+ "price": 3553.93,
  "entry": null,
  "sl": null,
  "tp": null,
  "sl_distance": null,
  "tp_distance": null,
  "r": null,
- "atr": 18.24,
- "adx": 45.7,
+ "atr": 17.57,
+ "adx": 43.12,
  "above_ema200": false,
  "delayed_minutes": null,
  "mode": "TEST",
  "source_type": "SPOT",
  "news_file_stale": false,
  "disclaimer": "این سیگنال‌ها آزمایشی/تست‌نشده‌اند، توصیه مالی نیستند و ریسک ضرر دارند.",
- "generated_at": "2026-11-20T06:30:49.133197+00:00"
+ "generated_at": "2026-11-20T06:45:37.665694+00:00"
 }
