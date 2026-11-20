@@ -1,0 +1,53 @@
+=== DIAGNOSIS (counts only, no results) ===
+data: 4999 candles M15, SPOT, evaluated 4400 candles
+period: 2026-10-05T11:30:00+00:00 -> 2026-11-20T07:30:00+00:00  (6.5 weeks)
+candles inside the working window (05-23 Tehran, weekdays): 2432
+
+--- 1) first failing rule (share of in-window candles) ---
+volatility_spike  نوسان بیش‌ازحد کندل          46    1.9%
+weak_trend        روند                        739   30.4%
+low_adx           ADX / جهت DI                607   25.0%
+no_pullback       پولبک                       678   27.9%
+no_trigger        تریگر ورود                  300   12.3%
+sl_too_wide       حد ضرر خیلی بزرگ             37    1.5%
+SIGNAL            کندل سیگنال (بدون قفل)       25    1.0%
+(no_data=0, outside window=1968)
+
+--- details: weak_trend (روند); one candle can fail for several reasons ---
+   385   52.1%  شیب EMA50 هم‌جهت نیست
+   372   50.3%  EMA50 در سمت اشتباهِ EMA200
+
+--- details: low_adx (ADX / DI); one candle can fail for several reasons ---
+   487   80.2%  ADX کمتر از حداقل
+   294   48.4%  جهت DI ناسازگار
+
+--- details: no_pullback (پولبک); one candle can fail for several reasons ---
+   603   88.9%  لمس EMA20 در پنجره‌ی پولبک نبود
+    75   11.1%  بسته شدن کندل بیرون از EMA50 در پولبک
+
+--- details: no_trigger (تریگر); one candle can fail for several reasons ---
+   290   96.7%  close سقف/کف پولبک را نشکسته
+   155   51.7%  رنگ کندل خلاف جهت
+   149   49.7%  بدنه‌ی کندل کوچک
+    70   23.3%  close سمت اشتباهِ EMA20
+
+--- sl_too_wide: R/ATR of the rejected setups (limit 2.0) ---
+count 37   min 2.03   median 3.16   90% 5.05   max 6.09
+
+--- 2) how many signals per week (state-aware: locks, cooldown, new pullback) ---
+فعلی (بدون تغییر)                14 signals    2.14 per week
+ADX_MIN  20 -> 15                16 signals    2.44 per week
+ADX_MIN  20 -> 10                19 signals    2.90 per week
+BODY_MIN  0.40 -> 0.30           14 signals    2.14 per week
+BODY_MIN  0.40 -> 0.20           15 signals    2.29 per week
+PULLBACK_MAX  5 -> 8              9 signals    1.37 per week
+PULLBACK_MAX  5 -> 12             5 signals    0.76 per week
+R_MAX_ATR  2.0 -> 2.5            17 signals    2.60 per week
+R_MAX_ATR  2.0 -> 3.0            19 signals    2.90 per week
+SLOPE_LOOKBACK  6 -> 3           14 signals    2.14 per week
+RANGE_MAX_ATR  2.5 -> 3.5        14 signals    2.14 per week
+COOLDOWN_CANDLES  8 -> 0         14 signals    2.14 per week
+
+NOTE: counts only. Win rate / profit are NOT shown on purpose: this sample is far too small to judge a setup,
+and choosing a setting by looking at its results would only fit the past. More signals does not mean more profit.
+consistency check (candles whose failure could not be explained): 0
