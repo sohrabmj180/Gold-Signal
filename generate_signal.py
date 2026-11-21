@@ -102,7 +102,7 @@ def _mode_prefix():
     return "🧪 آزمایشی | " if S.effective_mode() == "TEST" else ""
 
 def make_caption(sig, delay):
-    head = f"{_mode_prefix()}{C.NAME} {C.SIDE_LABEL[sig['side']]}"
+    head = f"{_mode_prefix()}{C.NAME} {C.SIDE_LABEL[sig['side']]}" + (" | Fib" if sig.get("setup") == "B" else "")
     if C.SOURCE_TYPE == "FUTURES":                         # no absolute prices on futures data
         lines = [head, "Entry: ≈ market", f"SL distance: {sig['sl_distance']:.2f}$",
                  f"TP distance: {sig['tp_distance']:.2f}$"]
@@ -137,6 +137,14 @@ def make_chart(df, sig, path):
         ax.add_patch(Rectangle((x0, a), x1 - x0, b - a, facecolor=colr, alpha=0.22, edgecolor=colr, linewidth=1))
     ax.plot([x0, x1], [entry, entry], color="#4c8dff", linewidth=1.3)
     mid = (x0 + x1) / 2
+    fib_lo = fib_hi = None
+    if sig.get("setup") == "B" and "leg_start" in sig:           # Fibonacci retracement of the impulse leg
+        la, lb = sig["leg_start"], sig["leg_end"]
+        levels = [(lv, lb + (la - lb) * lv) for lv in (0.0, 0.382, 0.5, 0.618, 0.786)]
+        for lv, y in levels:
+            ax.axhline(y, color="#f0b90b", linestyle=":", linewidth=0.8, alpha=0.75)
+            ax.text(-0.5, y, f"{lv * 100:.1f}%", color="#f0b90b", fontsize=6, va="bottom", ha="left")
+        fib_lo, fib_hi = min(y for _, y in levels), max(y for _, y in levels)
     tp_txt = f"TP  {abs(tp - entry):.1f}$  ({C.RR:g}R)" if futures else f"TP  {tp}"
     sl_txt = f"SL  {abs(sl - entry):.1f}$  (1R)" if futures else f"SL  {sl}"
     ax.text(mid, (entry + tp) / 2, tp_txt, color="white", ha="center", va="center", fontsize=9, fontweight="bold")
@@ -144,10 +152,13 @@ def make_chart(df, sig, path):
     ax.text(x1 - 0.3, entry, "Entry ≈ " if futures else f"Entry ≈ {entry}", color="#4c8dff",
             ha="right", va="bottom", fontsize=7)
     lo = min(float(d["Low"].min()), sl, tp); hi = max(float(d["High"].max()), sl, tp)
+    if fib_lo is not None:
+        lo, hi = min(lo, fib_lo), max(hi, fib_hi)
     pad = (hi - lo) * 0.06
     ax.set_ylim(lo - pad, hi + pad); ax.set_xlim(-1, x1 + 1)
     side_col = "#26a69a" if sig["side"] == "BUY" else "#ef5350"
-    ax.set_title(f"{C.NAME} {C.SIDE_LABEL[sig['side']].upper()}  M15" + ("   TEST" if S.effective_mode() == "TEST" else ""),
+    ax.set_title(f"{C.NAME} {C.SIDE_LABEL[sig['side']].upper()}  M15" + ("  Fib" if sig.get("setup") == "B" else "")
+                 + ("   TEST" if S.effective_mode() == "TEST" else ""),
                  fontsize=11, color=side_col, loc="left", fontweight="bold")
     ax.grid(color=grid, alpha=0.25, linewidth=0.5)
     for sp in ax.spines.values():
@@ -198,7 +209,8 @@ def log_text(rows):
 def _row(sg):
     return {"id": sg["id"], "time_utc": sg["time_utc"], "side": sg["side"], "reference": sg["reference_price"],
             "entry": sg["entry"], "sl": sg["sl"], "tp": sg["tp"], "r": sg["r"], "status": sg["status"],
-            "result_r": sg["result_r"], "close_time_utc": sg["close_time_utc"], "delivery": sg["delivery"]}
+            "result_r": sg["result_r"], "close_time_utc": sg["close_time_utc"], "delivery": sg["delivery"],
+            "setup": sg.get("setup", "A")}
 
 def apply_events(rows, events):
     byid = {str(r["id"]): r for r in rows}
@@ -217,7 +229,7 @@ def build_payload(prep, res, state, news_stale, now):
     p = {"status": "HOLD", "reason": None, "time_utc": None, "price": None, "entry": None, "sl": None, "tp": None,
          "sl_distance": None, "tp_distance": None, "r": None, "atr": None, "adx": None, "above_ema200": None,
          "delayed_minutes": None, "mode": S.effective_mode(), "source_type": C.SOURCE_TYPE,
-         "news_file_stale": bool(news_stale), "disclaimer": C.DISCLAIMER, "generated_at": now.isoformat()}
+         "news_file_stale": bool(news_stale), "disclaimer": C.DISCLAIMER, "generated_at": now.isoformat(), "setup": None}
     if not prep["ok"]:
         p["reason"] = prep["reason"]
         return p
@@ -228,7 +240,7 @@ def build_payload(prep, res, state, news_stale, now):
     shown = [r for r in state["signals"].values() if r["status"] == "OPEN" and r["delivery"] == "sent"]
     if shown:                                              # only signals that were really published
         r = max(shown, key=lambda x: x["time_utc"])
-        p.update(status=r["side"], reason=None, time_utc=r["time_utc"],
+        p.update(status=r["side"], reason=None, time_utc=r["time_utc"], setup=r.get("setup", "A"),
                  entry=None if futures else r["entry"], sl=None if futures else r["sl"],
                  tp=None if futures else r["tp"], sl_distance=r["sl_distance"], tp_distance=r["tp_distance"],
                  r=round(r["tp_distance"] / r["sl_distance"], 2),
