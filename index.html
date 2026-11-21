@@ -50,7 +50,8 @@ h1{font-size:20px;margin:0 0 4px;color:var(--gold)}
 <div class="st">
 <div>تعداد<b id="stN">-</b></div><div>نرخ برد<b id="stW">-</b></div><div>مجموع R<b id="stR">-</b></div>
 </div>
-<div class="n" id="last" style="margin-top:8px"></div>
+<div class="n" id="bySetup" style="margin-top:8px"></div>
+<div class="n" id="last" style="margin-top:4px"></div>
 </div>
 
 <div class="c" style="padding:0;overflow:hidden">
@@ -68,6 +69,8 @@ h1{font-size:20px;margin:0 0 4px;color:var(--gold)}
 <script>
 var REASONS={no_data:"داده‌ی کافی نیست",market_closed:"بازار بسته است",no_session:"خارج از ساعت کاری ربات (۵ صبح تا ۱۱ شب)",news_blackout:"بازه‌ی خبر (بلک‌اوت)",volatility_spike:"نوسان بیش‌ازحد کندل",open_signal:"یک سیگنال باز وجود دارد",cooldown:"کول‌داون بعد از ضرر",weak_trend:"روند به‌اندازه‌ی کافی قوی نیست",low_adx:"ADX پایین یا جهت DI ناسازگار",no_pullback:"پولبک کامل نشده",no_trigger:"تریگر ورود دیده نشد",sl_too_wide:"حد ضرر بیش‌ازحد بزرگ"};
 var SIDE={BUY:"🟢 خرید",SELL:"🔴 فروش"};
+var SETUP={A:"الگوی A (پولبک EMA)",B:"الگوی B (فیبوناچی)"};
+function stat(rows){var done=rows.filter(function(r){return r.status==="TP"||r.status==="SL"||r.status==="EXPIRED"});var w=done.filter(function(r){return r.status==="TP"}).length;var R=done.reduce(function(a,r){return a+(parseFloat(r.result_r)||0)},0);return {n:done.length,w:w,R:R}}
 function el(i){return document.getElementById(i)}
 function num(x,d){return (x===null||x===undefined||isNaN(x))?"-":Number(x).toFixed(d===undefined?2:d)}
 function fa(t){return new Date(t).toLocaleString("fa-IR",{timeZone:"Asia/Tehran",hour12:false})}
@@ -95,8 +98,11 @@ function showStats(rows){
   el("stN").textContent=done.length;
   el("stW").textContent=done.length?Math.round(win*100/done.length)+"٪":"-";
   el("stR").textContent=done.length?(R>=0?"+":"")+R.toFixed(2):"-";
+  var sa=stat(pub.filter(function(r){return r.setup!=="B"})),sb=stat(pub.filter(function(r){return r.setup==="B"}));
+  function line(t,x){return t+": "+x.n+" سیگنال"+(x.n?" — برد "+Math.round(x.w*100/x.n)+"٪ — مجموع "+(x.R>=0?"+":"")+x.R.toFixed(2)+"R":"")}
+  el("bySetup").textContent=line("الگوی A",sa)+"  |  "+line("الگوی B",sb);
   var last=pub[pub.length-1];
-  el("last").textContent=last?("آخرین سیگنال: "+(SIDE[last.side]||last.side)+" — "+fa(last.time_utc)+" — "+
+  el("last").textContent=last?("آخرین سیگنال: "+(SIDE[last.side]||last.side)+" ("+(last.setup==="B"?"B":"A")+") — "+fa(last.time_utc)+" — "+
     (last.status==="OPEN"?"باز":last.status+" ("+(parseFloat(last.result_r)>=0?"+":"")+num(last.result_r)+"R)")):"هنوز سیگنالی منتشر نشده است.";
 }
 
@@ -104,7 +110,7 @@ function showSignal(d){
   var S=d.status, why=el("why");
   if(S==="BUY"||S==="SELL"){
     el("sig").textContent=SIDE[S]; el("sig").className=(S==="BUY"?"b":"s");
-    el("sc").textContent="ورود تقریبی (قیمت بازار) — "+fa(d.time_utc)+(d.delayed_minutes>0?" — تأخیر "+d.delayed_minutes+" دقیقه":"");
+    el("sc").textContent=(SETUP[d.setup]||SETUP.A)+" — ورود تقریبی — "+fa(d.time_utc)+(d.delayed_minutes>0?" — تأخیر "+d.delayed_minutes+" دقیقه":"");
     var h='';
     if(d.entry!==null&&d.entry!==undefined){h+='<div>ورود (تقریبی)<b>'+num(d.entry)+'</b></div>';}
     h+='<div>تارگت<b class="b">'+(d.tp!==null?num(d.tp):num(d.tp_distance)+'$')+'</b></div>';
