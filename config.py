@@ -86,3 +86,15 @@ TD_SYMBOL = "XAU/USD"
 TD_OUTPUTSIZE = 1000
 # ---- Owner change: bot is ON 05:00 -> 23:00 Tehran time (23:00 = off) ----
 SESSIONS = (("Asia/Tehran", "05:00", "23:00"),)
+# ---- Setup B: Fibonacci pullback inside a swing trend (my draft values, not optimized) ----
+FIB_PIVOT_L = 5               # swing = fractal: higher/lower than 5 candles on each side (confirmed 5 candles later)
+FIB_LOOKBACK = 400            # candles searched for swings
+FIB_LEG_MIN_ATR = 2.0         # impulse leg must be >= 2 ATR
+FIB_MIN = 0.382               # correction must retrace at least 38.2% of the leg
+FIB_MAX = 0.786               # ... and at most 78.6% (deeper = structure failed)
+FIB_FRESH = 6                 # reversal candle must come within 6 candles after the correction extreme
+
+# ---- Two setups: A (EMA pullback) and B (Fibonacci pullback) ----
+ENABLE_SETUP_B = True
+LOG_COLUMNS = ["id", "time_utc", "side", "reference", "entry", "sl", "tp", "r", "status", "result_r",
+               "close_time_utc", "delivery", "setup"]
