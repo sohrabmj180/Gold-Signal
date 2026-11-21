@@ -186,3 +186,58 @@ def process(df, state, news=None, now_utc=None, send_fn=None, sleep_fn=None):
         if rec["status"] != "OPEN" and rec["delivery"] != "pending":
             del state["signals"][sid]
     return {"events": events, "last_eval": last_eval, "scanned": len(new_pos), "skipped_old": len(old_pos)}
+# =====================================================================
+# Two setups: A (EMA pullback, strategy.py) and B (Fibonacci pullback, fib.py).
+# Defined last on purpose: these replace the earlier _register / process above.
+# Both setups share the same locks per direction (one open signal per side) and the same state file.
+# =====================================================================
+import fib as _fib
+
+def _register(res, state, events):
+    sid = state["next_id"]
+    state["next_id"] = sid + 1
+    rec = dict(res)
+    rec.setdefault("setup", "A")
+    rec.update(id=sid, status="OPEN", sent=False, delivery="pending", mode=S.effective_mode(),
+               close_time_utc=None, result_r=None, delayed_minutes=None)
+    state["signals"][str(sid)] = rec
+    state["open"][rec["side"]] = sid
+    state["last_signal_time"][rec["side"]] = rec["time_utc"]
+    state["unsent"].append(sid)
+    events.append({"type": "SIGNAL_CREATED", "signal": dict(rec)})
+
+def process(df, state, news=None, now_utc=None, send_fn=None, sleep_fn=None):
+    """df: closed candles with indicators (from strategy.prepare, ok=True). Mutates `state` in place.
+    Every new candle is evaluated by setup A, then by setup B (if enabled)."""
+    now = pd.Timestamp.now(tz="UTC") if now_utc is None else _ts(now_utc)
+    events = []
+    lp = _ts(state["last_processed_time"])
+    if lp is None:
+        pos = [len(df) - 1]                                   # first run: only the newest closed candle
+    else:
+        pos = [int(x) for x in np.flatnonzero(df.index > lp)]
+    new_pos = pos[-C.MAX_SCAN_CANDLES:]
+    old_pos = pos[:-C.MAX_SCAN_CANDLES] if len(pos) > C.MAX_SCAN_CANDLES else []
+    for p in old_pos:                                         # too old to signal on, but open signals must still be tracked
+        _update_open(df, p, state, events)
+    last_eval = None
+    for p in new_pos:
+        _update_open(df, p, state, events)
+        res = S.evaluate_at(df, p, _ctx(state), news)
+        res.setdefault("setup", "A")
+        last_eval = res
+        if res["status"] == "SIGNAL":
+            _register(res, state, events)
+        if getattr(C, "ENABLE_SETUP_B", True):
+            rb = _fib.evaluate_fib_at(df, p, _ctx(state), news)
+            if rb["status"] == "SIGNAL":
+                _register(rb, state, events)
+    if new_pos:
+        state["last_processed_time"] = df.index[-1].isoformat()
+    else:
+        last_eval = S.evaluate_at(df, len(df) - 1, _ctx(state), news)      # read-only, for the website reason
+    _deliver(df, state, now, events, send_fn, sleep_fn)
+    for sid, rec in list(state["signals"].items()):           # forget finished + already handled signals
+        if rec["status"] != "OPEN" and rec["delivery"] != "pending":
+            del state["signals"][sid]
+    return {"events": events, "last_eval": last_eval, "scanned": len(new_pos), "skipped_old": len(old_pos)}
