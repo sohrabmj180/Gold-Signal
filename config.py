@@ -98,3 +98,14 @@ FIB_FRESH = 6                 # reversal candle must come within 6 candles after
 ENABLE_SETUP_B = True
 LOG_COLUMNS = ["id", "time_utc", "side", "reference", "entry", "sl", "tp", "r", "status", "result_r",
                "close_time_utc", "delivery", "setup"]
+# ---- Setup C: Smart Money (CHoCH + BOS + Order Block retest) - my reading of the owner's rules ----
+ENABLE_SETUP_C = True
+SMC_PIVOT_L = 3               # swing = fractal with 3 candles on each side (confirmed 3 candles later)
+SMC_LOOKBACK = 300            # candles searched for the structure
+SMC_OB_BODY_MIN = 0.40        # "strong" order-block candle: body >= 40% of its range (same 40% as setups A and B)
+SMC_OB_MAX_AGE = 48           # the order block must be at most 48 candles (12 hours) old
+SMC_REACTION_BODY = 0.40      # reaction candle: body >= 40% of its range (same 40% as setups A and B)
+SMC_REACT_WINDOW = 2          # first touch of the zone must be on the signal candle or within 2 candles before it
+SMC_BIAS_EMA = 10             # daily bias: last completed UTC day closed above/below the EMA(10) of daily closes
+SMC_SESSIONS = (("Europe/London", "08:00", "12:00"), ("America/New_York", "09:00", "13:00"))   # "high volatility hours"
+TD_OUTPUTSIZE = 5000          # ~ 54 trading days of M15: enough history for the daily bias
