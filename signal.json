@@ -2,7 +2,7 @@
  "status": "HOLD",
  "reason": "no_session",
  "time_utc": "2026-11-22T06:00:00+00:00",
- "price": 3537.37,
+ "price": 3537.27,
  "entry": null,
  "sl": null,
  "tp": null,
@@ -17,6 +17,6 @@
  "source_type": "SPOT",
  "news_file_stale": false,
  "disclaimer": "این سیگنال‌ها آزمایشی/تست‌نشده‌اند، توصیه مالی نیستند و ریسک ضرر دارند.",
- "generated_at": "2026-11-22T06:00:12.422709+00:00",
+ "generated_at": "2026-11-22T06:00:52.689300+00:00",
  "setup": null
 }
