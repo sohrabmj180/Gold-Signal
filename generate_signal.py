@@ -98,11 +98,13 @@ def tg(method, data=None, files=None):
         print("Telegram exception:", mask(e))
         return None
 
+_TAG = {"B": "Fib", "C": "SMC"}                            # label shown next to the symbol for setups B and C
+
 def _mode_prefix():
     return "🧪 آزمایشی | " if S.effective_mode() == "TEST" else ""
 
 def make_caption(sig, delay):
-    head = f"{_mode_prefix()}{C.NAME} {C.SIDE_LABEL[sig['side']]}" + (" | Fib" if sig.get("setup") == "B" else "")
+    head = f"{_mode_prefix()}{C.NAME} {C.SIDE_LABEL[sig['side']]}" + (f" | {_TAG[sig['setup']]}" if sig.get("setup") in _TAG else "")
     if C.SOURCE_TYPE == "FUTURES":                         # no absolute prices on futures data
         lines = [head, "Entry: ≈ market", f"SL distance: {sig['sl_distance']:.2f}$",
                  f"TP distance: {sig['tp_distance']:.2f}$"]
@@ -145,6 +147,17 @@ def make_chart(df, sig, path):
             ax.axhline(y, color="#f0b90b", linestyle=":", linewidth=0.8, alpha=0.75)
             ax.text(-0.5, y, f"{lv * 100:.1f}%", color="#f0b90b", fontsize=6, va="bottom", ha="left")
         fib_lo, fib_hi = min(y for _, y in levels), max(y for _, y in levels)
+    if sig.get("setup") == "C" and "ob_low" in sig:               # Smart Money: order block zone + BOS / CHoCH levels
+        oi = int(d.index.get_indexer([pd.Timestamp(sig["ob_time_utc"])])[0])
+        oi = max(oi, 0)
+        ax.add_patch(Rectangle((oi - 0.4, sig["ob_low"]), x1 - (oi - 0.4), sig["ob_high"] - sig["ob_low"],
+                               facecolor="#4c8dff", alpha=0.22, edgecolor="#4c8dff", linewidth=1))
+        ax.text(oi - 0.4, sig["ob_high"], " OB", color="#4c8dff", fontsize=7, va="bottom", ha="left")
+        for key, label in (("bos_level", "BOS"), ("choch_level", "CHoCH")):
+            ax.axhline(sig[key], color="#f0b90b", linestyle=":", linewidth=0.8, alpha=0.75)
+            ax.text(-0.5, sig[key], label, color="#f0b90b", fontsize=6, va="bottom", ha="left")
+        ys = (sig["ob_low"], sig["ob_high"], sig["bos_level"], sig["choch_level"])
+        fib_lo, fib_hi = min(ys), max(ys)
     tp_txt = f"TP  {abs(tp - entry):.1f}$  ({C.RR:g}R)" if futures else f"TP  {tp}"
     sl_txt = f"SL  {abs(sl - entry):.1f}$  (1R)" if futures else f"SL  {sl}"
     ax.text(mid, (entry + tp) / 2, tp_txt, color="white", ha="center", va="center", fontsize=9, fontweight="bold")
@@ -157,7 +170,7 @@ def make_chart(df, sig, path):
     pad = (hi - lo) * 0.06
     ax.set_ylim(lo - pad, hi + pad); ax.set_xlim(-1, x1 + 1)
     side_col = "#26a69a" if sig["side"] == "BUY" else "#ef5350"
-    ax.set_title(f"{C.NAME} {C.SIDE_LABEL[sig['side']].upper()}  M15" + ("  Fib" if sig.get("setup") == "B" else "")
+    ax.set_title(f"{C.NAME} {C.SIDE_LABEL[sig['side']].upper()}  M15" + (("  " + _TAG[sig["setup"]]) if sig.get("setup") in _TAG else "")
                  + ("   TEST" if S.effective_mode() == "TEST" else ""),
                  fontsize=11, color=side_col, loc="left", fontweight="bold")
     ax.grid(color=grid, alpha=0.25, linewidth=0.5)
