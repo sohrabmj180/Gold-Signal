@@ -1,25 +1,57 @@
 {
  "version": 1,
- "last_processed_time": "2026-11-23T17:45:00+00:00",
+ "last_processed_time": "2026-11-23T18:00:00+00:00",
  "open": {
-  "BUY": null,
+  "BUY": 3,
   "SELL": null
  },
  "last_signal_time": {
-  "BUY": "2026-11-23T09:00:00+00:00",
+  "BUY": "2026-11-23T18:15:00+00:00",
   "SELL": null
  },
  "last_sl_time": {
   "BUY": null,
   "SELL": null
  },
- "signals": {},
+ "signals": {
+  "3": {
+   "status": "OPEN",
+   "reason": null,
+   "side": "BUY",
+   "setup": "B",
+   "time_utc": "2026-11-23T18:15:00+00:00",
+   "reference_price": 3656.94,
+   "entry": 3657.24,
+   "sl": 3645.46,
+   "tp": 3680.8,
+   "r": 11.78,
+   "sl_distance": 11.78,
+   "tp_distance": 23.56,
+   "atr": 11.78,
+   "adx": 37.32,
+   "above_ema200": true,
+   "touch_time_utc": "2026-11-23T17:45:00+00:00",
+   "fib_depth": 0.523,
+   "leg_start": 3611.81,
+   "leg_end": 3689.08,
+   "source_type": "SPOT",
+   "id": 3,
+   "sent": true,
+   "delivery": "sent",
+   "mode": "TEST",
+   "close_time_utc": null,
+   "result_r": null,
+   "delayed_minutes": 1,
+   "late": false,
+   "msg_id": 171
+  }
+ },
  "unsent": [],
  "reports": {
   "daily": "2026-11-22",
   "weekly": "2026-11-20",
   "monthly": "2026-11-21"
  },
- "next_id": 3,
+ "next_id": 4,
  "c_day": ""
 }
