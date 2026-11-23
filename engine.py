@@ -241,3 +241,64 @@ def process(df, state, news=None, now_utc=None, send_fn=None, sleep_fn=None):
         if rec["status"] != "OPEN" and rec["delivery"] != "pending":
             del state["signals"][sid]
     return {"events": events, "last_eval": last_eval, "scanned": len(new_pos), "skipped_old": len(old_pos)}
+# =====================================================================
+# Three setups: A (EMA pullback), B (Fibonacci pullback), C (Smart Money: CHoCH + BOS + Order Block).
+# Defined last on purpose: these replace the earlier default_state / _register / process above.
+# All setups share the locks per direction. Setup C is limited to ONE signal per Tehran day (state key "c_day").
+# =====================================================================
+import smc as _smc
+
+_default_state_prev = default_state
+_register_prev = _register
+
+def default_state():
+    st = _default_state_prev()
+    st["c_day"] = ""                                          # Tehran date of the last setup-C signal
+    return st
+
+def _register(res, state, events):
+    _register_prev(res, state, events)
+    if res.get("setup") == "C":
+        state["c_day"] = pd.Timestamp(res["time_utc"]).tz_convert("Asia/Tehran").date().isoformat()
+
+def _ctx_full(state):
+    ctx = _ctx(state)
+    ctx["c_day"] = state.get("c_day", "")
+    return ctx
+
+def process(df, state, news=None, now_utc=None, send_fn=None, sleep_fn=None):
+    """df: closed candles with indicators (from strategy.prepare, ok=True). Mutates `state` in place.
+    Every new candle is evaluated by setup A, then B and C (each can be switched off in config.py)."""
+    now = pd.Timestamp.now(tz="UTC") if now_utc is None else _ts(now_utc)
+    events = []
+    lp = _ts(state["last_processed_time"])
+    if lp is None:
+        pos = [len(df) - 1]                                   # first run: only the newest closed candle
+    else:
+        pos = [int(x) for x in np.flatnonzero(df.index > lp)]
+    new_pos = pos[-C.MAX_SCAN_CANDLES:]
+    old_pos = pos[:-C.MAX_SCAN_CANDLES] if len(pos) > C.MAX_SCAN_CANDLES else []
+    for p in old_pos:                                         # too old to signal on, but open signals must still be tracked
+        _update_open(df, p, state, events)
+    last_eval = None
+    for p in new_pos:
+        _update_open(df, p, state, events)
+        res = S.evaluate_at(df, p, _ctx_full(state), news)
+        res.setdefault("setup", "A")
+        last_eval = res
+        if res["status"] == "SIGNAL":
+            _register(res, state, events)
+        for flag, fn in (("ENABLE_SETUP_B", _fib.evaluate_fib_at), ("ENABLE_SETUP_C", _smc.evaluate_smc_at)):
+            if getattr(C, flag, True):
+                rx = fn(df, p, _ctx_full(state), news)
+                if rx["status"] == "SIGNAL":
+                    _register(rx, state, events)
+    if new_pos:
+        state["last_processed_time"] = df.index[-1].isoformat()
+    else:
+        last_eval = S.evaluate_at(df, len(df) - 1, _ctx_full(state), news)   # read-only, for the website reason
+    _deliver(df, state, now, events, send_fn, sleep_fn)
+    for sid, rec in list(state["signals"].items()):           # forget finished + already handled signals
+        if rec["status"] != "OPEN" and rec["delivery"] != "pending":
+            del state["signals"][sid]
+    return {"events": events, "last_eval": last_eval, "scanned": len(new_pos), "skipped_old": len(old_pos)}
