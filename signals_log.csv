@@ -1,1 +1,2 @@
 id,time_utc,side,reference,entry,sl,tp,r,status,result_r,close_time_utc,delivery,setup
+1,2026-11-23T03:00:00+00:00,BUY,3593.44,3593.74,3575.16,3630.91,18.59,OPEN,,,sent,A
