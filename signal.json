@@ -2,7 +2,7 @@
  "status": "HOLD",
  "reason": "weak_trend",
  "time_utc": "2026-11-26T01:30:00+00:00",
- "price": 3572.99,
+ "price": 3569.26,
  "entry": null,
  "sl": null,
  "tp": null,
@@ -17,6 +17,6 @@
  "source_type": "SPOT",
  "news_file_stale": false,
  "disclaimer": "این سیگنال‌ها آزمایشی/تست‌نشده‌اند، توصیه مالی نیستند و ریسک ضرر دارند.",
- "generated_at": "2026-11-26T01:30:22.464308+00:00",
+ "generated_at": "2026-11-26T01:30:53.398704+00:00",
  "setup": null
 }
