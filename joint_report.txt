@@ -1,0 +1,49 @@
+=== JOINT STUDY of setups A, B, C (read only) ===
+data: 39999 candles M15, SPOT, price model BID, spread 0.6 USD
+period: 2025-09-25T04:00:00+00:00 -> 2026-11-27T04:15:00+00:00  (61.1 weeks = 1.17 years)
+entry at the next open; BUY pays Ask; SL wins a same-candle double touch; news filter removed; window as in config
+
+--- 1) each setup ALONE ---
+setup A  (signals created: 133)
+  closed trades: 133  (TP 39, SL 78, expired 16)   per week: 2.18
+  win rate: 29.3%   expectancy: 0.056 R  95% CI [-0.171 , 0.287]
+  profit factor: 1.09   max drawdown: 17.46 R   [n < 300: description only, no verdict]
+
+setup B  (signals created: 157)
+  closed trades: 157  (TP 37, SL 99, expired 21)   per week: 2.57
+  win rate: 23.6%   expectancy: -0.102 R  95% CI [-0.300 , 0.106]
+  profit factor: 0.84   max drawdown: 30.34 R   [n < 300: description only, no verdict]
+
+setup C  (signals created: 2)
+  closed trades: 2  (TP 0, SL 2, expired 0)   per week: 0.03
+  win rate: 0.0%   expectancy: -1.000 R  95% CI [-1.000 , -1.000]
+  profit factor: 0.00   max drawdown: 2.00 R   [n < 300: description only, no verdict]
+
+--- 2) overlap / contradiction between setups (signals within 1 hour of each other) ---
+A vs B:  of 133 A-trades: 28 same direction, 0 opposite  |  of 157 B-trades: 28 same direction, 0 opposite
+          A-trades opened while a B-trade of the opposite direction was open: 0;   B while A: 0
+A vs C:  of 133 A-trades: 0 same direction, 0 opposite  |  of 2 C-trades: 0 same direction, 0 opposite
+          A-trades opened while a C-trade of the opposite direction was open: 0;   C while A: 0
+B vs C:  of 157 B-trades: 1 same direction, 0 opposite  |  of 2 C-trades: 1 same direction, 0 opposite
+          B-trades opened while a C-trade of the opposite direction was open: 0;   C while B: 0
+
+--- 3) 'confluence': a setup's trades split by whether another setup took the same direction at the same time ---
+A: with a partner n=28 (win rate 32.1%, expectancy 0.244 R)   |   alone n=105 (win rate 28.6%, expectancy 0.006 R)
+B: with a partner n=29 (win rate 27.6%, expectancy 0.088 R)   |   alone n=128 (win rate 22.7%, expectancy -0.145 R)
+C: with a partner n=1 (win rate 0.0%, expectancy -1.000 R)   |   alone n=1 (win rate 0.0%, expectancy -1.000 R)
+
+--- 4) all three TOGETHER with shared locks (what the live bot would have taken) ---
+together
+  closed trades: 245  (TP 62, SL 153, expired 30)   per week: 4.01
+  win rate: 25.3%   expectancy: -0.067 R  95% CI [-0.227 , 0.102]
+  profit factor: 0.89   max drawdown: 37.83 R   [n < 300: description only, no verdict]
+
+  from setup A: 119 trades  (alone it would have had 133)
+  from setup B: 124 trades  (alone it would have had 157)
+  from setup C: 2 trades  (alone it would have had 2)
+  signals lost to the shared lock: about 47
+
+skipped: gap after signal 0, entry beyond SL 0, still open at the end (not counted) 0
+
+NOTE: this describes how the setups relate to each other. It is NOT a reason to change any parameter:
+choosing numbers by looking at these results would only fit the past. No verdict is given for samples under 300 trades.
