@@ -1,6 +1,6 @@
 {
  "version": 1,
- "last_processed_time": "2026-11-27T18:00:00+00:00",
+ "last_processed_time": "2026-11-27T18:15:00+00:00",
  "open": {
   "BUY": null,
   "SELL": null
@@ -16,8 +16,8 @@
  "signals": {},
  "unsent": [],
  "reports": {
-  "daily": "2026-11-26",
-  "weekly": "2026-11-20",
+  "daily": "2026-11-27",
+  "weekly": "2026-11-27",
   "monthly": "2026-11-21"
  },
  "next_id": 6,
