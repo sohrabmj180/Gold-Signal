@@ -1,0 +1,39 @@
+=== DIAGNOSIS of setup C (counts only, no results) ===
+data: 39999 candles M15, SPOT; period 2025-09-26T11:00:00+00:00 -> 2026-11-28T11:15:00+00:00 (61.1 weeks)
+candles inside the C window (London/New York, weekdays): 9776  of 39400
+
+--- 1) first failing rule (share of in-window candles) ---
+volatility_spike     177    1.8%
+no_bias               15    0.2%
+no_structure        4228   43.2%
+no_ob                508    5.2%
+stale_ob            3837   39.2%
+ob_broken            428    4.4%
+no_retest            308    3.2%
+ob_touched           242    2.5%
+no_reaction           24    0.2%
+sl_too_wide            7    0.1%
+SIGNAL                 2    0.0%
+(no_data=96, outside window=29528)
+
+--- 2) no_structure: the deepest step the pattern CHoCH -> HL -> BOS reached ---
+     0    0.0%  کمتر از ۶ سقف/کف متناوب
+    79    1.9%  ساختار قبلی نزولی نبود (سقف و کف پایین‌تر)
+   433   10.2%  کف بالاتر (HL) تشکیل نشد
+  2739   64.8%  CHoCH نشد (close بالای آخرین سقف پایین‌تر)
+   977   23.1%  BOS نشد (close بالای سقف جدید)
+     0    0.0%  ساختار کامل بود
+
+--- 3) setup C signals over the whole period (state-aware: one per Tehran day, locks) ---
+فعلی (بدون تغییر)                                       2 signals    0.03 per week
+SMC_PIVOT_L  3 -> 2                                     2 signals    0.03 per week
+SMC_PIVOT_L  3 -> 5                                     1 signals    0.02 per week
+SMC_LOOKBACK  300 -> 600                                2 signals    0.03 per week
+SMC_OB_MAX_AGE  48 -> 96                                2 signals    0.03 per week
+SMC_REACT_WINDOW  2 -> 4                                4 signals    0.07 per week
+SMC_OB_BODY_MIN / SMC_REACTION_BODY  0.40 -> 0.30       3 signals    0.05 per week
+R_MAX_ATR  2.0 -> 3.0                                   5 signals    0.08 per week
+ساعت کاری C = ۵ تا ۲۳ تهران                             2 signals    0.03 per week
+بدون Daily Bias (هر دو جهت)                             7 signals    0.11 per week
+
+NOTE: counts only. Win rate / profit are NOT shown on purpose: choosing a setting by its results only fits the past.
