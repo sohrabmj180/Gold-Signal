@@ -109,3 +109,5 @@ SMC_REACT_WINDOW = 2          # first touch of the zone must be on the signal ca
 SMC_BIAS_EMA = 10             # daily bias: last completed UTC day closed above/below the EMA(10) of daily closes
 SMC_SESSIONS = (("Europe/London", "08:00", "12:00"), ("America/New_York", "09:00", "13:00"))   # "high volatility hours"
 TD_OUTPUTSIZE = 5000          # ~ 54 trading days of M15: enough history for the daily bias
+# ---- Owner change: setup B is switched OFF (A and C keep running) ----
+ENABLE_SETUP_B = False
